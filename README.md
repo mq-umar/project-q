@@ -1,6 +1,6 @@
 # Project Q
 
-Project Q is a Windows-first personal AI executive agent with an iPhone companion. This repository contains a runnable local MVP foundation that focuses on the core system described in the PRD:
+Project Q is a personal AI executive assistant: a Windows-first local agent with an iPhone companion. This repository contains a runnable local MVP foundation that focuses on the core system described in the PRD:
 
 - local orchestration
 - provider-backed reasoning
