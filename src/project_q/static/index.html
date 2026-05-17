@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Project Q</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Private Executive Agent</p>
+          <h1>Project Q</h1>
+          <p class="hero-copy">
+            Windows-first local runtime for orchestration, memory, agents, audit,
+            and secure execution.
+          </p>
+        </div>
+        <div class="hero-actions">
+          <button id="refreshButton" class="secondary-button">Refresh</button>
+          <div class="status-pill" id="statusPill">Connecting...</div>
+        </div>
+      </header>
+
+      <main class="dashboard">
+        <section class="card chat-card">
+          <div class="card-header">
+            <div>
+              <p class="card-label">Conversation</p>
+              <h2>Operator Console</h2>
+            </div>
+          </div>
+          <div id="conversationFeed" class="conversation-feed"></div>
+          <form id="chatForm" class="chat-form">
+            <textarea
+              id="chatInput"
+              placeholder="Give Project Q a command, task, or memory..."
+              rows="4"
+            ></textarea>
+            <label class="checkbox-row">
+              <input id="chatApproval" type="checkbox" />
+              Allow this chat turn to execute higher-tier actions if needed
+            </label>
+            <div class="form-actions">
+              <button type="submit">Send</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
+            <div>
+              <p class="card-label">Work Queue</p>
+              <h2>Tasks</h2>
+            </div>
+          </div>
+          <form id="taskForm" class="inline-form">
+            <input id="taskTitle" placeholder="Add a task title" />
+            <button type="submit">Add</button>
+          </form>
+          <div id="taskList" class="stack-list"></div>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
+            <div>
+              <p class="card-label">Long-Term State</p>
+              <h2>Memory</h2>
+            </div>
+          </div>
+          <form id="memoryForm" class="inline-form">
+            <input id="memoryText" placeholder="Store a preference, fact, or lesson" />
+            <button type="submit">Store</button>
+          </form>
+          <div id="memoryList" class="stack-list"></div>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
+            <div>
+              <p class="card-label">Build Operations</p>
+              <h2>Dispatches</h2>
+            </div>
+          </div>
+          <p class="helper-copy">
+            App, website, API, script, and repair requests are classified here with acceptance criteria and artifacts.
+          </p>
+          <div id="dispatchList" class="stack-list compact-list"></div>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
+            <div>
+              <p class="card-label">Idle Intelligence</p>
+              <h2>Learning Lab</h2>
+            </div>
+          </div>
+          <p id="learningStatusText" class="helper-copy">Learning Lab status loading...</p>
+          <div class="list-actions">
+            <button id="learningRunOnceButton" type="button" class="secondary-button">Run Once</button>
+            <button id="learningStartButton" type="button">Start</button>
+            <button id="learningStopButton" type="button" class="secondary-button">Stop</button>
+          </div>
+          <div id="learningRunList" class="stack-list compact-list"></div>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
+            <div>
+              <p class="card-label">Self Debugging</p>
+              <h2>Diagnostics</h2>
+            </div>
+          </div>
+          <p class="helper-copy">
+            Runs tool registration checks, recent failure analysis, and a code-generation smoke simulation.
+          </p>
+          <div class="list-actions">
+            <button id="diagnosticsRunButton" type="button">Run Diagnostics</button>
+            <button id="diagnosticsAutoRepairButton" type="button" class="secondary-button">Auto Repair</button>
+          </div>
+          <div id="diagnosticsRunList" class="stack-list compact-list"></div>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
+            <div>
+              <p class="card-label">Weight Training</p>
+              <h2>Training Lab</h2>
+            </div>
+          </div>
+          <p class="helper-copy">
+            Exports Project Q conversations, repair lessons, and routing evals into local datasets for future LoRA fine-tuning.
+          </p>
+          <div class="list-actions">
+            <button id="trainingExportButton" type="button">Export Training Assets</button>
+            <button id="trainingPrepareLoraButton" type="button" class="secondary-button">Prepare LoRA Job</button>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
+            <div>
+              <p class="card-label">Sub-Agents</p>
+              <h2>Agent Registry</h2>
+            </div>
+          </div>
+          <form id="agentForm" class="inline-form">
+            <input id="agentName" placeholder="Agent name" />
+            <input id="agentGoal" placeholder="Goal" />
+            <button type="submit">Spawn</button>
+          </form>
+          <div id="agentList" class="stack-list"></div>
+        </section>
+
+        <section class="card wide-card">
+          <div class="card-header">
+            <div>
+              <p class="card-label">Trusted Automation</p>
+              <h2>Routine Registry</h2>
+            </div>
+          </div>
+          <form id="routineForm" class="inline-form vertical">
+            <input id="routineName" placeholder="Routine name" />
+            <input id="routineGoal" placeholder="Routine goal" />
+            <textarea id="routineSteps" rows="8" placeholder="Routine steps JSON"></textarea>
+            <label class="checkbox-row">
+              <input id="routineTrusted" type="checkbox" />
+              Mark as trusted routine for tier 2 automation
+            </label>
+            <div class="form-actions">
+              <button type="submit">Save Routine</button>
+            </div>
+          </form>
+          <div id="routineList" class="stack-list"></div>
+        </section>
+
+        <section class="card wide-card">
+          <div class="card-header">
+            <div>
+              <p class="card-label">Execution</p>
+              <h2>Tool Runner</h2>
+            </div>
+          </div>
+          <form id="toolForm" class="tool-form">
+            <select id="toolSelect"></select>
+            <textarea id="toolPayload" rows="6">
+{}
+            </textarea>
+            <label class="checkbox-row">
+              <input id="toolApproval" type="checkbox" />
+              Treat this run as owner-approved
+            </label>
+            <div class="form-actions">
+              <button type="submit">Execute Tool</button>
+            </div>
+          </form>
+          <pre id="toolResult" class="console-output">No tool run yet.</pre>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
+            <div>
+              <p class="card-label">Secrets</p>
+              <h2>Vault</h2>
+            </div>
+          </div>
+          <form id="secretForm" class="inline-form vertical">
+            <input id="secretName" placeholder="Secret name" />
+            <input id="secretValue" placeholder="Secret value" type="password" />
+            <input id="secretDescription" placeholder="Description" />
+            <button type="submit">Store Secret</button>
+          </form>
+          <div id="secretList" class="stack-list"></div>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
+            <div>
+              <p class="card-label">Owner Policy</p>
+              <h2>Settings</h2>
+            </div>
+          </div>
+          <form id="settingsForm" class="inline-form vertical">
+            <input id="ownerName" placeholder="Owner name" />
+            <select id="aggressionLevel">
+              <option value="conservative">Conservative</option>
+              <option value="normal">Normal</option>
+              <option value="operator">Operator</option>
+              <option value="maximum">Maximum</option>
+            </select>
+            <label class="range-row">
+              <span>Auto-approve tier</span>
+              <input id="autoApproveTier" type="range" min="0" max="3" step="1" />
+            </label>
+            <label class="checkbox-row">
+              <input id="notificationsEnabled" type="checkbox" />
+              Notifications enabled
+            </label>
+            <label class="checkbox-row">
+              <input id="providerEnabled" type="checkbox" />
+              Enable advanced model provider
+            </label>
+            <select id="providerType">
+              <option value="ollama">Ollama (free local)</option>
+              <option value="openai_responses">OpenAI-compatible API</option>
+            </select>
+            <input id="modelName" placeholder="Primary/default model name" />
+            <label class="checkbox-row">
+              <input id="ollamaModelRoutingEnabled" type="checkbox" />
+              Enable four-model Ollama routing
+            </label>
+            <input id="ollamaGeneralModel" placeholder="General model (example: qwen3.5:9b)" />
+            <input id="ollamaCodingModel" placeholder="Coding model (example: qwen2.5-coder:7b)" />
+            <input id="ollamaReasoningModel" placeholder="Reasoning model (example: deepseek-r1:7b)" />
+            <input id="ollamaFastModel" placeholder="Fast model (example: llama3.1:8b)" />
+            <input id="modelBaseUrl" placeholder="Provider base URL" />
+            <input id="modelSecretName" placeholder="Secret name for API key" />
+            <label class="range-row">
+              <span>Provider timeout</span>
+              <input id="providerTimeoutSeconds" type="range" min="5" max="120" step="5" />
+            </label>
+            <label class="checkbox-row">
+              <input id="browserHeadless" type="checkbox" />
+              Run browser tools headless
+            </label>
+            <input id="browserChannel" placeholder="Browser channel (example: msedge)" />
+            <input id="browserExecutablePath" placeholder="Optional browser executable path" />
+            <textarea
+              id="fileAccessRoots"
+              rows="4"
+              placeholder="Owner file access roots, one per line. Example: C:\Users\umarq.APEX"
+            ></textarea>
+            <label class="range-row">
+              <span>Learning interval seconds</span>
+              <input id="learningIntervalSeconds" type="number" min="10" max="86400" step="10" />
+            </label>
+            <label class="range-row">
+              <span>Learning max cycles per start</span>
+              <input id="learningMaxCyclesPerStart" type="number" min="1" max="1000" step="1" />
+            </label>
+            <div class="model-browser">
+              <div class="form-actions">
+                <button id="refreshModelsButton" type="button" class="secondary-button">Refresh Local Models</button>
+              </div>
+              <div id="providerModelStatus" class="helper-copy">Built-in heuristic mode works with provider disabled.</div>
+              <div id="providerModelList" class="stack-list compact-list"></div>
+            </div>
+            <div class="form-actions">
+              <button type="submit">Save Settings</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="card wide-card">
+          <div class="card-header">
+            <div>
+              <p class="card-label">Auditability</p>
+              <h2>Audit Log</h2>
+            </div>
+          </div>
+          <div id="auditList" class="stack-list"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

@@ -1,0 +1,13 @@
+[project]
+name = "project-q"
+version = "0.1.0"
+description = "Windows-first personal AI executive agent foundation"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic>=2.0.0",
+]
+
+[tool.pyright]
+include = ["src", "tests"]
+

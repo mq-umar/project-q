@@ -1,0 +1,488 @@
+:root {
+  --bg: #06100f;
+  --bg-2: #0a1716;
+  --panel: rgba(9, 23, 24, 0.86);
+  --panel-strong: rgba(4, 12, 14, 0.96);
+  --panel-soft: rgba(255, 255, 255, 0.035);
+  --line: rgba(138, 255, 219, 0.15);
+  --line-strong: rgba(138, 255, 219, 0.28);
+  --text: #f3f7ef;
+  --muted: #9db5aa;
+  --muted-2: #6f887f;
+  --accent: #8affdb;
+  --accent-2: #f6c66a;
+  --accent-3: #62b9ff;
+  --danger: #ff8d85;
+  --shadow: 0 24px 90px rgba(0, 0, 0, 0.42);
+  --radius-xl: 28px;
+  --radius-lg: 20px;
+  --radius-md: 14px;
+  font-family: "Aptos Display", "Bahnschrift", "Segoe UI Variable Display", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  color: var(--text);
+  background:
+    radial-gradient(circle at 16% -10%, rgba(138, 255, 219, 0.22), transparent 28rem),
+    radial-gradient(circle at 88% 2%, rgba(246, 198, 106, 0.15), transparent 24rem),
+    linear-gradient(145deg, #020706 0%, var(--bg) 44%, #101707 100%);
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.22;
+  background-image:
+    linear-gradient(rgba(138, 255, 219, 0.14) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(138, 255, 219, 0.1) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: linear-gradient(to bottom, black, transparent 86%);
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  border: 0;
+}
+
+.app-shell {
+  width: min(1540px, calc(100% - 36px));
+  margin: 0 auto;
+  padding: 24px 0 48px;
+}
+
+.hero {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: flex-start;
+  margin-bottom: 22px;
+  padding: clamp(22px, 3vw, 34px);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  background:
+    linear-gradient(110deg, rgba(12, 31, 32, 0.98), rgba(7, 16, 17, 0.9)),
+    repeating-linear-gradient(90deg, transparent 0 20px, rgba(138, 255, 219, 0.04) 20px 21px);
+  box-shadow: var(--shadow);
+}
+
+.hero::after {
+  content: "";
+  position: absolute;
+  right: -8rem;
+  bottom: -12rem;
+  width: 28rem;
+  height: 28rem;
+  border: 1px solid rgba(138, 255, 219, 0.18);
+  border-radius: 50%;
+  box-shadow: inset 0 0 80px rgba(138, 255, 219, 0.06);
+}
+
+.eyebrow,
+.card-label {
+  margin: 0 0 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-family: "Cascadia Code", "Bahnschrift", monospace;
+  font-size: 0.7rem;
+  color: var(--accent);
+}
+
+.hero h1,
+.card h2 {
+  margin: 0;
+  letter-spacing: -0.045em;
+  font-weight: 800;
+}
+
+.hero h1 {
+  font-size: clamp(2.9rem, 7vw, 6.8rem);
+  line-height: 0.82;
+}
+
+.hero-copy {
+  max-width: 760px;
+  color: var(--muted);
+  margin: 18px 0 0;
+  line-height: 1.65;
+  font-size: 1.02rem;
+}
+
+.hero-actions {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.status-pill,
+button {
+  border-radius: 999px;
+}
+
+.status-pill {
+  max-width: 520px;
+  background: rgba(138, 255, 219, 0.1);
+  border: 1px solid var(--line-strong);
+  color: var(--accent);
+  padding: 11px 16px;
+  box-shadow: inset 0 0 24px rgba(138, 255, 219, 0.06);
+}
+
+button {
+  min-height: 42px;
+  background: linear-gradient(130deg, var(--accent), var(--accent-3));
+  color: #04100f;
+  padding: 10px 18px;
+  font-weight: 800;
+  cursor: pointer;
+  transition:
+    transform 160ms ease,
+    filter 160ms ease,
+    border-color 160ms ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.04);
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+  transform: none;
+}
+
+.secondary-button {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--line);
+  color: var(--text);
+}
+
+.dashboard {
+  display: grid;
+  grid-template-columns: minmax(360px, 1.35fr) repeat(2, minmax(280px, 0.92fr));
+  gap: 18px;
+  align-items: start;
+}
+
+.card {
+  position: relative;
+  padding: 18px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 34%),
+    var(--panel);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(18px);
+  min-height: 220px;
+}
+
+.card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background: linear-gradient(135deg, rgba(138, 255, 219, 0.09), transparent 38%);
+  opacity: 0.8;
+}
+
+.wide-card {
+  grid-column: span 2;
+}
+
+.chat-card {
+  grid-row: span 2;
+}
+
+.card-header {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 14px;
+}
+
+.card h2 {
+  font-size: clamp(1.35rem, 2vw, 1.9rem);
+}
+
+.conversation-feed {
+  position: relative;
+  z-index: 1;
+  border-radius: 18px;
+  border: 1px solid rgba(138, 255, 219, 0.12);
+  background:
+    linear-gradient(180deg, rgba(138, 255, 219, 0.045), transparent),
+    var(--panel-strong);
+  min-height: 420px;
+  max-height: 520px;
+  overflow: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 12px;
+}
+
+.message {
+  padding: 14px 16px;
+  border-radius: 18px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.message strong {
+  display: inline-block;
+  margin-bottom: 8px;
+  font-family: "Cascadia Code", monospace;
+  font-size: 0.78rem;
+  color: var(--accent-2);
+}
+
+.message.user {
+  background: rgba(98, 185, 255, 0.13);
+  border: 1px solid rgba(98, 185, 255, 0.18);
+}
+
+.message.assistant {
+  background: rgba(138, 255, 219, 0.08);
+  border: 1px solid rgba(138, 255, 219, 0.16);
+}
+
+.chat-form,
+.inline-form,
+.tool-form {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.inline-form.vertical,
+#settingsForm {
+  flex-direction: column;
+}
+
+.chat-form,
+.tool-form {
+  flex-direction: column;
+}
+
+input,
+textarea,
+select {
+  width: 100%;
+  border: 1px solid rgba(138, 255, 219, 0.12);
+  background: rgba(1, 8, 10, 0.78);
+  color: var(--text);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  outline: none;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    background 160ms ease;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(138, 255, 219, 0.09);
+  background: rgba(1, 10, 12, 0.94);
+}
+
+textarea {
+  resize: vertical;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.stack-list {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.list-item {
+  padding: 13px 14px;
+  border-radius: 16px;
+  background:
+    linear-gradient(90deg, rgba(138, 255, 219, 0.075), transparent 44%),
+    rgba(1, 8, 10, 0.74);
+  border: 1px solid rgba(255, 255, 255, 0.055);
+}
+
+.list-item strong {
+  display: block;
+  margin-bottom: 5px;
+  letter-spacing: -0.02em;
+}
+
+.list-actions {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.meta-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 9px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border: 1px solid rgba(138, 255, 219, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.055);
+  color: #cbe7dc;
+}
+
+.console-output {
+  position: relative;
+  z-index: 1;
+  margin: 12px 0 0;
+  min-height: 220px;
+  max-height: 420px;
+  overflow: auto;
+  border-radius: 18px;
+  background: #01080a;
+  border: 1px solid rgba(138, 255, 219, 0.12);
+  padding: 14px;
+  color: #b9f8e8;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 0.85rem;
+}
+
+.checkbox-row,
+.range-row {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+}
+
+.checkbox-row input[type="checkbox"] {
+  width: auto;
+  accent-color: var(--accent);
+}
+
+.range-row {
+  justify-content: space-between;
+}
+
+.range-row input[type="range"] {
+  width: 50%;
+  accent-color: var(--accent);
+}
+
+.helper-copy {
+  position: relative;
+  z-index: 1;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.compact-list {
+  max-height: 190px;
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.card,
+.hero {
+  animation: panel-in 420ms ease both;
+}
+
+@media (max-width: 1180px) {
+  .hero,
+  .hero-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .dashboard {
+    grid-template-columns: 1fr;
+  }
+
+  .chat-card,
+  .wide-card {
+    grid-row: auto;
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  .app-shell {
+    width: min(100% - 20px, 1540px);
+    padding-top: 10px;
+  }
+
+  .hero,
+  .card {
+    border-radius: 18px;
+    padding: 14px;
+  }
+
+  .inline-form {
+    flex-direction: column;
+  }
+
+  .conversation-feed {
+    min-height: 340px;
+  }
+}
