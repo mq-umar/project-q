@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from project_q.models import AgentCreate, MemoryCreate, ReasonerPlan, RoutineCreate, TaskCreate
+from project_q.services.sync import SyncEventService
 
 
 class PlanExecutorService:
@@ -18,6 +19,7 @@ class PlanExecutorService:
         audit_service,
         artifact_service,
         code_repair_service,
+        approval_service=None,
     ) -> None:
         self.memory_service = memory_service
         self.task_service = task_service
@@ -28,6 +30,7 @@ class PlanExecutorService:
         self.audit_service = audit_service
         self.artifact_service = artifact_service
         self.code_repair_service = code_repair_service
+        self.approval_service = approval_service
 
     def execute(
         self,
@@ -35,6 +38,10 @@ class PlanExecutorService:
         plan: ReasonerPlan,
         owner_approved: bool,
         input_sources: list[str],
+        session_id: str = "",
+        originating_goal: str = "",
+        model: str = "",
+        plan_id: str = "",
     ) -> dict[str, Any]:
         created_task_ids: list[str] = []
         created_memory_ids: list[str] = []
@@ -42,6 +49,7 @@ class PlanExecutorService:
         created_routine_ids: list[str] = []
         executed_tools: list[dict[str, Any]] = []
         blocked_tools: list[dict[str, Any]] = []
+        created_action_request_ids: list[str] = []
 
         for memory_plan in plan.memory_writes:
             memory = self.memory_service.create(
@@ -99,22 +107,46 @@ class PlanExecutorService:
             decision = self.policy_service.authorize_tool(
                 tier=tool.definition.tier,
                 owner_approved=owner_approved,
+                input_sources=input_sources,
+                tool_id=tool_call.tool_id,
             )
             if not decision.allowed:
-                blocked_tools.append(
-                    {
-                        "tool_id": tool_call.tool_id,
-                        "reason": decision.reason,
-                        "payload": tool_call.payload,
-                    }
-                )
+                blocked = {
+                    "tool_id": tool_call.tool_id,
+                    "reason": decision.reason,
+                    "payload": SyncEventService._redact(tool_call.payload),
+                }
+                if (
+                    self.approval_service is not None
+                    and tool.definition.tier in {2, 3}
+                    and decision.reason == f"tier {tool.definition.tier} requires owner approval"
+                ):
+                    action_request = self.approval_service.create_request(
+                        tool_id=tool_call.tool_id,
+                        action_tier=tool.definition.tier,
+                        payload=tool_call.payload,
+                        summary=tool_call.reason or f"Run {tool.definition.name}",
+                        session_id=session_id,
+                        originating_goal=originating_goal or plan.reply,
+                        input_sources=input_sources,
+                        model=model,
+                        plan_id=plan_id,
+                    )
+                    blocked["action_request_id"] = action_request["id"]
+                    blocked["payload"] = action_request["redacted_preview"]
+                    created_action_request_ids.append(action_request["id"])
+                blocked_tools.append(blocked)
                 self.audit_service.log(
                     action_type="tool_execution",
                     action_tier=tool.definition.tier,
                     tool_name=tool_call.tool_id,
                     outcome="blocked",
                     input_sources=input_sources,
-                    metadata={"reason": decision.reason, "payload": tool_call.payload},
+                    metadata={
+                        "reason": decision.reason,
+                        "payload": SyncEventService._redact(tool_call.payload),
+                        "action_request_id": blocked.get("action_request_id", ""),
+                    },
                 )
                 continue
 
@@ -157,6 +189,7 @@ class PlanExecutorService:
             "created_routine_ids": created_routine_ids,
             "executed_tools": executed_tools,
             "blocked_tools": blocked_tools,
+            "created_action_request_ids": created_action_request_ids,
         }
 
     @staticmethod

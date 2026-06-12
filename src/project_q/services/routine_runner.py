@@ -165,6 +165,7 @@ class RoutineRunnerService:
             tier=tool.definition.tier,
             owner_approved=owner_approved,
             trusted_routine=bool(routine["trusted"]),
+            input_sources=["owner", "routines"],
         )
         if not decision.allowed:
             self.audit_service.log(

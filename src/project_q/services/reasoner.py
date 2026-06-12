@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any, Callable
 from urllib import error, request
@@ -9,10 +10,16 @@ from urllib.parse import quote, urlsplit, urlunsplit
 
 from project_q.models import ReasonerPlan
 from project_q.services.intent_normalizer import IntentNormalizer
+from project_q.services.provider_streaming import (
+    IncrementalJsonReplyExtractor,
+    default_stream_transport,
+    iter_provider_text,
+)
 
 
 Transport = Callable[[str, bytes, dict[str, str], int], dict[str, Any]]
 GetTransport = Callable[[str, dict[str, str], int], dict[str, Any]]
+StreamTransport = Callable[[str, bytes, dict[str, str], int], Iterable[str | bytes]]
 
 
 @dataclass(slots=True)
@@ -24,6 +31,12 @@ class ReasonerResult:
     warning: str | None = None
 
 
+@dataclass(slots=True)
+class ReasonerStreamEvent:
+    token: str = ""
+    result: ReasonerResult | None = None
+
+
 class ReasonerService:
     def __init__(
         self,
@@ -32,12 +45,14 @@ class ReasonerService:
         audit_service,
         transport: Transport | None = None,
         get_transport: GetTransport | None = None,
+        stream_transport: StreamTransport | None = None,
     ) -> None:
         self.settings_service = settings_service
         self.vault_service = vault_service
         self.audit_service = audit_service
         self.transport = transport or self._default_transport
         self.get_transport = get_transport or self._default_get_transport
+        self.stream_transport = stream_transport or default_stream_transport
         self.intent_normalizer = IntentNormalizer()
 
     def status(self) -> dict[str, Any]:
@@ -178,6 +193,126 @@ class ReasonerService:
             provider_configured=self._provider_configured(settings),
         )
 
+    def stream_plan(self, *, user_message: str, context: dict[str, Any]) -> Iterator[ReasonerStreamEvent]:
+        settings = self.settings_service.get_all()
+        normalization = self.intent_normalizer.normalize(user_message)
+        planning_message = normalization.normalized
+        planning_context = {
+            **context,
+            "owner_request_original": user_message,
+            "owner_request_normalized": planning_message,
+            "intent_corrections": normalization.corrections,
+        }
+        deterministic_plan = self._deterministic_plan_for_request(
+            user_message=planning_message,
+            context=planning_context,
+        )
+        configured = self._provider_configured(settings)
+        if deterministic_plan is not None or not settings.get("provider_enabled") or not configured:
+            yield ReasonerStreamEvent(result=self.plan(user_message=user_message, context=context))
+            return
+
+        selected_model = self._provider_model_for_request(
+            user_message=planning_message,
+            context=planning_context,
+            settings=settings,
+        )
+        request_settings = {**settings, "resolved_model_name": selected_model}
+        provider_type = str(settings.get("provider_type", "ollama"))
+        try:
+            extractor = IncrementalJsonReplyExtractor()
+            document_parts: list[str] = []
+            for text_delta in self._stream_plan_provider(
+                user_message=planning_message,
+                context=planning_context,
+                settings=request_settings,
+            ):
+                document_parts.append(text_delta)
+                reply_delta = "".join(extractor.feed(text_delta))
+                if reply_delta:
+                    yield ReasonerStreamEvent(token=reply_delta)
+
+            parsed = self._extract_json("".join(document_parts))
+            plan = ReasonerPlan.model_validate(parsed)
+            plan = self._normalize_plan_for_request(plan=plan, user_message=planning_message)
+            if self._should_override_noop_plan(plan=plan, user_message=planning_message):
+                local_plan = self._actionable_fallback_plan(
+                    user_message=planning_message,
+                    context=planning_context,
+                )
+                self.audit_service.log(
+                    action_type="reasoner_plan",
+                    action_tier=0,
+                    tool_name=f"{provider_type}_reasoner",
+                    outcome="overridden",
+                    model=selected_model or "remote-model",
+                    metadata={
+                        "provider_type": provider_type,
+                        "selected_model": selected_model,
+                        "reason": "provider_returned_noop_for_actionable_request",
+                        "intent_normalized": normalization.changed,
+                        "streaming": True,
+                    },
+                    input_sources=["owner", "memory", "tasks", "agents", "routines"],
+                )
+                yield ReasonerStreamEvent(
+                    result=ReasonerResult(
+                        plan=local_plan,
+                        mode="local-fallback",
+                        model_name=selected_model,
+                        provider_configured=True,
+                        warning=(
+                            "Provider returned an empty no-op plan for an actionable request, "
+                            "so Project Q used the local action router."
+                        ),
+                    )
+                )
+                return
+
+            self.audit_service.log(
+                action_type="reasoner_plan",
+                action_tier=0,
+                tool_name=f"{provider_type}_reasoner",
+                outcome="completed",
+                model=selected_model or "remote-model",
+                metadata={
+                    "provider_type": provider_type,
+                    "selected_model": selected_model,
+                    "intent_normalized": normalization.changed,
+                    "intent_corrections": normalization.corrections[:12],
+                    "streaming": True,
+                },
+                input_sources=["owner", "memory", "tasks", "agents", "routines"],
+            )
+            yield ReasonerStreamEvent(
+                result=ReasonerResult(
+                    plan=plan,
+                    mode=self._status_mode(settings, True),
+                    model_name=selected_model,
+                    provider_configured=True,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.audit_service.log(
+                action_type="reasoner_plan",
+                action_tier=0,
+                tool_name=f"{provider_type}_reasoner",
+                outcome="failed",
+                model=selected_model or "remote-model",
+                error=str(exc),
+                metadata={"streaming": True},
+            )
+            local_plan = self._plan_local(user_message=planning_message, context=planning_context)
+            yield ReasonerStreamEvent(
+                result=ReasonerResult(
+                    plan=local_plan,
+                    mode="local-fallback",
+                    model_name=selected_model,
+                    provider_configured=True,
+                    warning=str(exc),
+                )
+            )
+
     def _deterministic_plan_for_request(
         self,
         *,
@@ -203,8 +338,14 @@ class ReasonerService:
                 phrase in lowered
                 for phrase in ("open vscode", "open visual studio code", "launch vscode", "launch visual studio code")
             )
-            or self._wants_complex_browser_goal(lowered)
-            or self._wants_visible_browser_action(lowered)
+            or (
+                self._wants_complex_browser_goal(lowered)
+                and not self._wants_controlled_browser_action(lowered)
+            )
+            or (
+                self._wants_visible_browser_action(lowered)
+                and not self._wants_controlled_browser_action(lowered)
+            )
             or (
                 bool(urls)
                 and any(
@@ -221,6 +362,12 @@ class ReasonerService:
         provider_type = settings.get("provider_type", "ollama")
         if provider_type == "openai_responses":
             return bool(settings.get("model_name")) and bool(settings.get("model_secret_name"))
+        if provider_type == "anthropic_messages":
+            return (
+                bool(settings.get("model_name"))
+                and bool(settings.get("model_base_url"))
+                and bool(settings.get("model_secret_name"))
+            )
         if provider_type == "ollama":
             return bool(self._status_model_name(settings)) and bool(settings.get("model_base_url"))
         return False
@@ -236,7 +383,84 @@ class ReasonerService:
         provider_type = settings.get("provider_type", "ollama")
         if provider_type == "ollama":
             return self._plan_ollama(user_message=user_message, context=context, settings=settings)
+        if provider_type == "anthropic_messages":
+            return self._plan_anthropic(user_message=user_message, context=context, settings=settings)
         return self._plan_openai(user_message=user_message, context=context, settings=settings)
+
+    def _stream_plan_provider(
+        self,
+        *,
+        user_message: str,
+        context: dict[str, Any],
+        settings: dict[str, Any],
+    ) -> Iterator[str]:
+        provider_type = str(settings.get("provider_type", "ollama"))
+        if provider_type == "openai_responses":
+            secret_name = str(settings["model_secret_name"])
+            api_key = self.vault_service.get_secret(secret_name)
+            payload = {
+                "model": settings.get("resolved_model_name") or settings["model_name"],
+                "instructions": self._developer_prompt(),
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": self._user_prompt(user_message=user_message, context=context),
+                            }
+                        ],
+                    }
+                ],
+                "text": {"format": {"type": "json_object"}},
+                "stream": True,
+            }
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
+        elif provider_type == "anthropic_messages":
+            secret_name = str(settings["model_secret_name"])
+            api_key = self.vault_service.get_secret(secret_name)
+            payload = {
+                "model": settings.get("resolved_model_name") or settings["model_name"],
+                "max_tokens": 4096,
+                "system": self._developer_prompt(),
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": self._user_prompt(user_message=user_message, context=context),
+                    }
+                ],
+                "stream": True,
+            }
+            headers = {
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            }
+        elif provider_type == "ollama":
+            payload = {
+                "model": settings.get("resolved_model_name") or settings["model_name"],
+                "messages": [
+                    {"role": "system", "content": self._developer_prompt()},
+                    {"role": "user", "content": self._user_prompt(user_message=user_message, context=context)},
+                ],
+                "stream": True,
+                "format": "json",
+                "think": False,
+            }
+            headers = {"Content-Type": "application/json"}
+        else:
+            raise ValueError(f"unsupported streaming provider type: {provider_type}")
+
+        lines = self.stream_transport(
+            str(settings["model_base_url"]),
+            json.dumps(payload).encode("utf-8"),
+            headers,
+            self._provider_timeout_seconds(settings),
+        )
+        yield from iter_provider_text(provider_type, lines)
 
     def _plan_openai(self, *, user_message: str, context: dict[str, Any], settings: dict[str, Any]) -> ReasonerPlan:
         secret_name = str(settings["model_secret_name"])
@@ -271,6 +495,35 @@ class ReasonerService:
             self._provider_timeout_seconds(settings),
         )
         text = self._extract_text(raw)
+        parsed = self._extract_json(text)
+        plan = ReasonerPlan.model_validate(parsed)
+        return self._normalize_plan_for_request(plan=plan, user_message=user_message)
+
+    def _plan_anthropic(self, *, user_message: str, context: dict[str, Any], settings: dict[str, Any]) -> ReasonerPlan:
+        secret_name = str(settings["model_secret_name"])
+        api_key = self.vault_service.get_secret(secret_name)
+        payload = {
+            "model": settings.get("resolved_model_name") or settings["model_name"],
+            "max_tokens": 4096,
+            "system": self._developer_prompt(),
+            "messages": [
+                {
+                    "role": "user",
+                    "content": self._user_prompt(user_message=user_message, context=context),
+                }
+            ],
+        }
+        raw = self.transport(
+            str(settings["model_base_url"]),
+            json.dumps(payload).encode("utf-8"),
+            {
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            },
+            self._provider_timeout_seconds(settings),
+        )
+        text = self._extract_anthropic_text(raw)
         parsed = self._extract_json(text)
         plan = ReasonerPlan.model_validate(parsed)
         return self._normalize_plan_for_request(plan=plan, user_message=user_message)
@@ -379,6 +632,24 @@ class ReasonerService:
             goal = re.sub(r"^(automation:|routine:)\s*", "", user_message, flags=re.IGNORECASE).strip()
             payload["reply"] = "I saved that as a reusable routine."
             payload["routine_writes"].append(self._heuristic_routine(goal, lowered, urls))
+        elif not urls and re.search(
+            r"\b(research|investigate|cross[- ]?reference|compare sources)\b",
+            lowered,
+        ):
+            query = re.sub(
+                r"^(?:please\s+)?(?:deep\s+)?(?:research|investigate)\s+",
+                "",
+                user_message,
+                flags=re.IGNORECASE,
+            ).strip()
+            payload["reply"] = "I can inspect and compare multiple public sources for that."
+            payload["tool_calls"].append(
+                {
+                    "tool_id": "research.web",
+                    "payload": {"query": query or user_message, "max_sources": 4},
+                    "reason": "Collect multiple public sources with provenance and trust scanning.",
+                }
+            )
         elif urls and any(keyword in lowered for keyword in ("research", "summarize", "inspect", "look at", "browse", "analyze")):
             payload["reply"] = "I can inspect that page and bring back the key details."
             payload["tool_calls"].append(
@@ -617,9 +888,13 @@ class ReasonerService:
             "Use routine_writes when the owner is asking for a reusable automation or trusted workflow. "
             "If the owner asks to create or modify a specific file now, do not use routine_writes unless they explicitly ask for an automation. "
             "For file creation or code generation inside the workspace, prefer filesystem.write_file over shell.run_command. "
+            "For moving, renaming, or archiving owner-approved files, use filesystem.move_path or filesystem.create_zip instead of shell commands. "
+            "For monitoring an allowed folder for file changes, use filesystem.watch_start and filesystem.watch_poll. "
             "For finding owner files, prefer filesystem.resolve_file_request so ambiguous results ask for confirmation and clear matches can open or reveal. "
             "Use filesystem.search_files only for raw search lists where no opening or selection is needed. "
             "For spreadsheet calculations, summaries, totals, averages, and workbook modifications, use spreadsheet.inspect, spreadsheet.analyze, or spreadsheet.write_analysis. "
+            "For owner-reviewed email drafts, use communications.email_draft; do not send email. "
+            "For owner-reviewed calendar event files, use calendar.create_invite. "
             "For requests to troubleshoot Project Q itself, run self checks, debug recent mistakes, or inspect reliability, prefer diagnostics.run_self_check. "
             "For requests asking how Project Q can become ChatGPT, Codex, Claude, or AGI-like, prefer training.capability_plan. "
             "For requests to train model weights, fine-tune yourself, or create a LoRA job, prefer training.prepare_lora_job. "
@@ -628,10 +903,17 @@ class ReasonerService:
             "For website, landing page, web app, and static site creation requests, prefer code.generate_website. "
             "For broader app, API, script, tool, or build requests that should create files, prefer code.generate_project. "
             "For refactor, research, or build requests that need tracking before implementation, prefer project.plan_build. "
+            "For one-shot local microphone dictation, use voice.listen_once only when voice is enabled. "
             "For Python files, prefer pathlib, avoid hardcoded absolute Windows paths, and avoid backslash-joined f-string paths. "
             "For visible browser opening or simple web searches, prefer windows.open_url. "
+            "For owner-facing reminders or completion alerts, use windows.notify when notifications are enabled. "
+            "For reading visible text from a saved screen artifact, use windows.ocr_screenshot after windows.capture_screenshot. "
+            "For comparing two screen artifacts, use windows.screenshot_diff. For app status/focus heuristics, use windows.app_state or windows.focus_follow. "
+            "For native Windows app inspection or control discovery, use windows.inspect_ui_tree before windows.invoke_ui_element. "
+            "For Windows registry work, use windows.registry_read for scoped inspection and windows.registry_write only for owner-approved Project Q HKCU values. "
             "For fuzzy, multi-step browser goals like finding tutorials, switching to images, or opening the best result, prefer browser.complete_goal. "
-            "Use browser.run_actions only for exact in-browser steps and browser.inspect_page for read-only inspection. "
+            "Use browser.run_actions for exact public-web interaction steps such as click, fill, press, select_option, check, uncheck, hover, wait_for_selector, extract_text, screenshot, new_tab, switch_tab, close_tab, download, allowed-root upload, and pause_for_owner. "
+            "Use browser.inspect_page for read-only public-web inspection. "
             "Prefer read-only tools before speculative answers. "
             "Never request secrets, never invent files, never exceed the listed tool ids, "
             "and avoid destructive actions unless clearly necessary."
@@ -654,6 +936,10 @@ class ReasonerService:
             "- tool_calls: array of {tool_id, reason, payload} where payload must always be a JSON object, never a string\n"
             "  example shell payload: {\"command\": \"Get-ChildItem\", \"workdir\": \".\", \"timeout_seconds\": 15}\n"
             "  example write payload: {\"path\": \"notes/example.py\", \"content\": \"print('hi')\"}\n"
+            "  example move payload: {\"source\": \"notes/example.py\", \"destination\": \"archive/example.py\"}\n"
+            "  example zip payload: {\"paths\": [\"notes\"], \"destination\": \"archives/notes.zip\"}\n"
+            "  example watch start payload: {\"root\": \"notes\", \"name\": \"notes-watch\"}\n"
+            "  example watch poll payload: {\"watch_id\": \"watch_abc123\", \"update_baseline\": true}\n"
             "  example file search payload: {\"root\": \".\", \"query\": \"invoice\", \"include_content\": true, \"max_results\": 50}\n"
             "  example file resolve payload: {\"root\": \".\", \"instruction\": \"find resume for Muhammad Umar Qasim\", \"query\": \"resume\", \"action\": \"reveal\"}\n"
             "  example file choice payload: {\"choice_id\": \"choice_abc123\", \"selection\": 1, \"mode\": \"open\"}\n"
@@ -668,6 +954,11 @@ class ReasonerService:
             "  example project generation payload: {\"instruction\": \"build a Python script that scans for TODO comments\"}\n"
             "  example project build payload: {\"instruction\": \"build a CRM dashboard app with login and reports\"}\n"
             "  example browser goal payload: {\"instruction\": \"find me a tutorial on how to setup this stand\"}\n"
+            "  example notification payload: {\"title\": \"Project Q\", \"message\": \"Your task is complete.\"}\n"
+            "  example UI inspect payload: {\"window_title\": \"Calculator\", \"max_elements\": 80}\n"
+            "  example UI invoke payload: {\"window_title\": \"Calculator\", \"automation_id\": \"num1Button\", \"control_type\": \"Button\"}\n"
+            "  example registry read payload: {\"path\": \"HKCU:\\\\Software\\\\ProjectQ\", \"name\": \"Demo\"}\n"
+            "  example registry write payload: {\"path\": \"HKCU:\\\\Software\\\\ProjectQ\\\\Settings\", \"name\": \"Demo\", \"value\": \"enabled\", \"value_kind\": \"String\"}\n"
             "  for Python content, use pathlib-based paths or forward slashes instead of raw Windows backslashes\n"
             "  if the owner asks to create a file right now, prefer tool_calls with filesystem.write_file and leave routine_writes empty unless they explicitly asked for automation\n"
             "Leave arrays empty when nothing should be created."
@@ -693,6 +984,18 @@ class ReasonerService:
         if isinstance(response_payload.get("response"), str):
             return response_payload["response"]
         raise ValueError("No model text found in Ollama response")
+
+    def _extract_anthropic_text(self, response_payload: dict[str, Any]) -> str:
+        pieces: list[str] = []
+        for content in response_payload.get("content", []):
+            if isinstance(content, str):
+                pieces.append(content)
+            elif isinstance(content, dict) and content.get("type") == "text":
+                pieces.append(str(content.get("text", "")))
+        text = "\n".join(piece for piece in pieces if piece).strip()
+        if text:
+            return text
+        raise ValueError("No model text found in Anthropic response")
 
     def _extract_json(self, text: str) -> dict[str, Any]:
         try:
@@ -1239,6 +1542,21 @@ class ReasonerService:
 
     def _normalize_plan_for_request(self, *, plan: ReasonerPlan, user_message: str) -> ReasonerPlan:
         lowered = user_message.lower()
+        controlled_browser_calls = [
+            call
+            for call in plan.tool_calls
+            if call.tool_id == "browser.run_actions"
+        ]
+        if self._wants_controlled_browser_action(lowered) and controlled_browser_calls:
+            normalized = plan.model_dump()
+            normalized["memory_writes"] = []
+            normalized["task_writes"] = []
+            normalized["agent_writes"] = []
+            normalized["routine_writes"] = []
+            normalized["tool_calls"] = [
+                call.model_dump() for call in controlled_browser_calls
+            ]
+            return ReasonerPlan.model_validate(normalized)
         if self._wants_complex_browser_goal(lowered):
             normalized = plan.model_dump()
             normalized["memory_writes"] = []
@@ -1406,6 +1724,28 @@ class ReasonerService:
         return any(
             phrase in lowered
             for phrase in ("open the browser", "open browser", "search google", "google search")
+        )
+
+    def _wants_controlled_browser_action(self, lowered: str) -> bool:
+        return any(
+            phrase in lowered
+            for phrase in (
+                " click ",
+                "click the",
+                "fill ",
+                "type into",
+                "type in",
+                "submit",
+                "download",
+                "upload",
+                "sign in",
+                "log in",
+                "login",
+                "check the",
+                "uncheck",
+                "choose the",
+                "select the option",
+            )
         )
 
     def _wants_complex_browser_goal(self, lowered: str) -> bool:

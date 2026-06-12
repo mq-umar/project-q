@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import shutil
 import subprocess
 import uuid
 import zipfile
@@ -112,6 +113,24 @@ def _run_powershell_json(script: str, *, timeout_seconds: int = 10) -> dict[str,
         raise RuntimeError(completed.stderr.strip() or "PowerShell command failed")
     stdout = completed.stdout.strip()
     return json.loads(stdout) if stdout else {}
+
+
+def _snapshot_existing_path(data_root: Path, path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"status": "not_needed", "path": "", "source": str(path), "is_dir": False}
+    snapshot_root = data_root / "file_snapshots" / _utc_now().replace(":", "")
+    snapshot_root.mkdir(parents=True, exist_ok=True)
+    target = snapshot_root / f"{uuid.uuid4().hex}_{path.name}"
+    if path.is_dir():
+        shutil.copytree(path, target)
+    else:
+        shutil.copy2(path, target)
+    return {
+        "status": "created",
+        "path": str(target.resolve()),
+        "source": str(path),
+        "is_dir": path.is_dir(),
+    }
 
 
 def _open_or_reveal_path(path: Path, mode: str, *, dry_run: bool = False) -> dict[str, Any]:
@@ -250,8 +269,13 @@ class FilesystemWriteTool:
     def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
         target = self._resolve_path(payload["path"])
         target.parent.mkdir(parents=True, exist_ok=True)
+        snapshot = _snapshot_existing_path(self.data_root, target)
         target.write_text(payload.get("content", ""), encoding="utf-8")
-        return {"path": str(target), "bytes_written": len(payload.get("content", "").encode("utf-8"))}
+        return {
+            "path": str(target),
+            "bytes_written": len(payload.get("content", "").encode("utf-8")),
+            "snapshot": snapshot,
+        }
 
     def _resolve_path(self, raw_path: str) -> Path:
         return resolve_allowed_path(
@@ -393,6 +417,321 @@ class FilesystemSearchTool:
         else:
             candidates = [str(item).strip() for item in raw_extensions]
         return {item.lower() if item.startswith(".") else f".{item.lower()}" for item in candidates if item}
+
+
+class FilesystemMoveTool:
+    definition = ToolDefinition(
+        tool_id="filesystem.move_path",
+        name="Move Or Rename Path",
+        description="Move or rename a file or directory inside allowed roots without implicit overwrite",
+        tier=2,
+    )
+
+    def __init__(self, workspace_root: Path, data_root: Path, settings_service=None) -> None:
+        self.workspace_root = workspace_root
+        self.data_root = data_root
+        self.settings_service = settings_service
+
+    def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
+        source = self._resolve_path(payload.get("source", ""), must_exist=True)
+        destination = self._resolve_path(payload.get("destination", ""), must_exist=False)
+        if source == destination:
+            raise ValueError("source and destination must be different")
+        self._reject_root_path(source)
+        if destination.exists():
+            raise FileExistsError(str(destination))
+        if source.is_dir() and (destination == source or destination.is_relative_to(source)):
+            raise ValueError("destination cannot be inside the source directory")
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        moved_path = Path(shutil.move(str(source), str(destination))).resolve()
+        return {
+            "status": "moved",
+            "source": str(source),
+            "destination": str(moved_path),
+            "is_dir": moved_path.is_dir(),
+        }
+
+    def _resolve_path(self, raw_path: str, *, must_exist: bool) -> Path:
+        if not str(raw_path or "").strip():
+            raise ValueError("source and destination are required")
+        return resolve_allowed_path(
+            raw_path,
+            workspace_root=self.workspace_root,
+            data_root=self.data_root,
+            settings_service=self.settings_service,
+            must_exist=must_exist,
+        )
+
+    def _reject_root_path(self, path: Path) -> None:
+        roots = configured_roots(self.workspace_root, self.data_root, self.settings_service)
+        if any(path == root for root in roots):
+            raise PermissionError("moving an allowed root is not permitted")
+
+
+class FilesystemZipTool:
+    definition = ToolDefinition(
+        tool_id="filesystem.create_zip",
+        name="Create Zip Archive",
+        description="Create a zip archive from files or directories inside allowed roots",
+        tier=1,
+    )
+
+    def __init__(self, workspace_root: Path, data_root: Path, settings_service=None) -> None:
+        self.workspace_root = workspace_root
+        self.data_root = data_root
+        self.settings_service = settings_service
+
+    def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
+        paths = payload.get("paths")
+        if isinstance(paths, str):
+            raw_paths = [paths]
+        else:
+            raw_paths = list(paths or [])
+        if not raw_paths:
+            raise ValueError("paths is required")
+
+        sources = [self._resolve_source(path) for path in raw_paths]
+        destination = self._resolve_destination(str(payload.get("destination", "") or "archive.zip"))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists() and not bool(payload.get("overwrite", False)):
+            raise FileExistsError(str(destination))
+
+        files = self._collect_files(sources, destination)
+        with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for file_path in files:
+                archive.write(file_path, self._archive_name(file_path))
+
+        return {
+            "status": "created",
+            "path": str(destination),
+            "source_count": len(sources),
+            "file_count": len(files),
+            "entries": [self._archive_name(path) for path in files[:50]],
+        }
+
+    def _resolve_source(self, raw_path: str) -> Path:
+        return resolve_allowed_path(
+            raw_path,
+            workspace_root=self.workspace_root,
+            data_root=self.data_root,
+            settings_service=self.settings_service,
+            must_exist=True,
+        )
+
+    def _resolve_destination(self, raw_path: str) -> Path:
+        destination = resolve_allowed_path(
+            raw_path,
+            workspace_root=self.workspace_root,
+            data_root=self.data_root,
+            settings_service=self.settings_service,
+            must_exist=False,
+        )
+        if destination.suffix.lower() != ".zip":
+            destination = destination.with_suffix(".zip")
+        return destination
+
+    def _collect_files(self, sources: list[Path], destination: Path) -> list[Path]:
+        files: list[Path] = []
+        for source in sources:
+            if source.is_file():
+                if source.resolve() != destination.resolve():
+                    files.append(source)
+                continue
+            for file_path in sorted(source.rglob("*"), key=lambda item: str(item).lower()):
+                if not file_path.is_file():
+                    continue
+                if file_path.resolve() == destination.resolve():
+                    continue
+                files.append(file_path)
+        if not files:
+            raise ValueError("no files found to archive")
+        return files
+
+    def _archive_name(self, path: Path) -> str:
+        roots = configured_roots(self.workspace_root, self.data_root, self.settings_service)
+        for root in roots:
+            if path == root or path.is_relative_to(root):
+                relative = path.relative_to(root)
+                return relative.as_posix() if str(relative) != "." else path.name
+        return path.name
+
+
+class FileWatchStore:
+    def __init__(self, data_root: Path) -> None:
+        self.root = data_root / "file_watches"
+
+    def save(self, record: dict[str, Any]) -> dict[str, Any]:
+        self.root.mkdir(parents=True, exist_ok=True)
+        watch_id = record.get("watch_id") or "watch_" + uuid.uuid4().hex[:12]
+        record["watch_id"] = watch_id
+        record["updated_at"] = _utc_now()
+        target = self.root / f"{watch_id}.json"
+        target.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
+        return record
+
+    def load(self, watch_id: str) -> dict[str, Any]:
+        clean = str(watch_id or "").strip()
+        if not clean:
+            raise ValueError("watch_id is required")
+        if Path(clean).name != clean:
+            raise ValueError("watch_id must be a simple identifier")
+        target = self.root / f"{clean}.json"
+        if not target.exists():
+            raise KeyError(clean)
+        return json.loads(target.read_text(encoding="utf-8"))
+
+
+class FilesystemWatchStartTool:
+    definition = ToolDefinition(
+        tool_id="filesystem.watch_start",
+        name="Start File Watch",
+        description="Create a snapshot baseline for future file-change polling inside an allowed root",
+        tier=0,
+    )
+
+    def __init__(self, workspace_root: Path, data_root: Path, settings_service=None) -> None:
+        self.workspace_root = workspace_root
+        self.data_root = data_root
+        self.settings_service = settings_service
+        self.store = FileWatchStore(data_root)
+
+    def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
+        root = self._resolve_root(str(payload.get("root", ".")))
+        max_files = max(1, min(int(payload.get("max_files", 25000)), 200000))
+        name = str(payload.get("name", root.name or "watch")).strip()[:120] or "watch"
+        snapshot = self._snapshot(root, max_files=max_files)
+        record = self.store.save(
+            {
+                "name": name,
+                "root": str(root),
+                "max_files": max_files,
+                "created_at": _utc_now(),
+                "snapshot": snapshot,
+            }
+        )
+        return {
+            "status": "watching",
+            "watch_id": record["watch_id"],
+            "name": name,
+            "root": str(root),
+            "file_count": len(snapshot),
+            "max_files": max_files,
+        }
+
+    def _resolve_root(self, raw_root: str) -> Path:
+        root = resolve_allowed_path(
+            raw_root,
+            workspace_root=self.workspace_root,
+            data_root=self.data_root,
+            settings_service=self.settings_service,
+            must_exist=True,
+        )
+        if not root.is_dir():
+            raise NotADirectoryError(str(root))
+        return root
+
+    def _snapshot(self, root: Path, *, max_files: int) -> dict[str, dict[str, Any]]:
+        snapshot: dict[str, dict[str, Any]] = {}
+        for file_path in _walk_files(root):
+            if len(snapshot) >= max_files:
+                break
+            try:
+                stat = file_path.stat()
+            except OSError:
+                continue
+            relative_path = file_path.relative_to(root).as_posix()
+            snapshot[relative_path] = {
+                "relative_path": relative_path,
+                "path": str(file_path),
+                "size_bytes": stat.st_size,
+                "modified_ns": stat.st_mtime_ns,
+            }
+        return dict(sorted(snapshot.items(), key=lambda item: item[0].lower()))
+
+
+class FilesystemWatchPollTool:
+    definition = ToolDefinition(
+        tool_id="filesystem.watch_poll",
+        name="Poll File Watch",
+        description="Compare an existing file-watch baseline with the current filesystem state",
+        tier=0,
+    )
+
+    def __init__(self, workspace_root: Path, data_root: Path, settings_service=None) -> None:
+        self.workspace_root = workspace_root
+        self.data_root = data_root
+        self.settings_service = settings_service
+        self.store = FileWatchStore(data_root)
+
+    def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
+        record = self.store.load(str(payload.get("watch_id", "")))
+        root = self._resolve_root(record["root"])
+        max_files = max(1, min(int(payload.get("max_files", record.get("max_files", 25000))), 200000))
+        update_baseline = str(payload.get("update_baseline", True)).strip().lower() not in {"0", "false", "no", "off"}
+        current = FilesystemWatchStartTool(
+            self.workspace_root,
+            self.data_root,
+            self.settings_service,
+        )._snapshot(root, max_files=max_files)
+        previous = record.get("snapshot", {})
+        added = [current[path] for path in sorted(set(current) - set(previous), key=str.lower)]
+        deleted = [previous[path] for path in sorted(set(previous) - set(current), key=str.lower)]
+        modified = [
+            current[path]
+            for path in sorted(set(current) & set(previous), key=str.lower)
+            if self._signature(current[path]) != self._signature(previous[path])
+        ]
+        change_count = len(added) + len(modified) + len(deleted)
+        if update_baseline:
+            record["snapshot"] = current
+            record["max_files"] = max_files
+            self.store.save(record)
+        return {
+            "status": "changed" if change_count else "unchanged",
+            "watch_id": record["watch_id"],
+            "name": record.get("name", ""),
+            "root": str(root),
+            "change_count": change_count,
+            "added": added,
+            "modified": modified,
+            "deleted": deleted,
+            "baseline_updated": update_baseline,
+            "file_count": len(current),
+        }
+
+    def _resolve_root(self, raw_root: str) -> Path:
+        root = resolve_allowed_path(
+            raw_root,
+            workspace_root=self.workspace_root,
+            data_root=self.data_root,
+            settings_service=self.settings_service,
+            must_exist=True,
+        )
+        if not root.is_dir():
+            raise NotADirectoryError(str(root))
+        return root
+
+    @staticmethod
+    def _signature(item: dict[str, Any]) -> tuple[int, int]:
+        return (int(item.get("size_bytes", -1)), int(item.get("modified_ns", -1)))
+
+
+def _walk_files(root: Path):
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            children = sorted(current.iterdir(), key=lambda item: (item.is_file(), item.name.lower()))
+        except OSError:
+            continue
+        for child in children:
+            if child.is_dir():
+                if child.name in SKIPPED_SEARCH_DIRS:
+                    continue
+                stack.append(child)
+            else:
+                yield child
 
 
 def _read_docx_text(path: Path) -> str:

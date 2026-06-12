@@ -12,6 +12,8 @@ dist/
 .project_q*/
 generated_projects/
 generated_sites/
+generated_apps/
+.worktrees/
 notes/
 third_party/
 *.sqlite

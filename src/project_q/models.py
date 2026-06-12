@@ -4,7 +4,7 @@ import json
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def utc_now() -> str:
@@ -24,6 +24,7 @@ class ChatResponse(BaseModel):
     created_routine_ids: list[str] = Field(default_factory=list)
     executed_tools: list[dict[str, Any]] = Field(default_factory=list)
     blocked_tools: list[dict[str, Any]] = Field(default_factory=list)
+    created_action_request_ids: list[str] = Field(default_factory=list)
     reasoning_mode: str = "local"
     model_name: str | None = None
     context_summary: dict[str, Any] = Field(default_factory=dict)
@@ -163,7 +164,7 @@ class SettingsUpdate(BaseModel):
     owner_name: str | None = None
     aggression_level: str | None = None
     auto_approve_tier: int | None = Field(default=None, ge=0, le=3)
-    memory_mode: str | None = None
+    memory_mode: str | None = None  # ephemeral | standard | aggressive
     voice_enabled: bool | None = None
     sync_enabled: bool | None = None
     notifications_enabled: bool | None = None
@@ -185,6 +186,22 @@ class SettingsUpdate(BaseModel):
     learning_enabled: bool | None = None
     learning_interval_seconds: int | None = Field(default=None, ge=10, le=86400)
     learning_max_cycles_per_start: int | None = Field(default=None, ge=1, le=1000)
+    kill_switch_active: bool | None = None
+    kill_switch_reason: str | None = None
+    kill_switch_activated_at: str | None = None
+    kill_switch_source: str | None = None
+    # §12.1 Behavior Profiles
+    proactive_mode: str | None = None
+    screen_context: str | None = None
+    network_policy: str | None = None
+    execution_environment: Literal["sandbox_first", "direct_trusted"] | None = None
+    # §12.2 Integrations & Retention
+    outlook_enabled: bool | None = None
+    scheduler_enabled: bool | None = None
+    auto_reflect_on_tasks: bool | None = None
+    metrics_enabled: bool | None = None
+    memory_retention_days: int | None = Field(default=None, ge=0, le=3650)
+    git_workspace: str | None = None
 
     @field_validator("file_access_roots", mode="before")
     @classmethod
@@ -213,6 +230,86 @@ class LearningStartRequest(BaseModel):
 
 class LearningRunOnceRequest(BaseModel):
     reason: str = Field(default="manual", max_length=500)
+
+
+class ControlRequest(BaseModel):
+    reason: str = Field(default="", max_length=500)
+    source: str = Field(default="dashboard", max_length=100)
+
+
+class VoiceTranscriptRequest(BaseModel):
+    transcript: str = Field(min_length=1, max_length=8000)
+    owner_approved: bool = False
+    source: str = Field(default="desktop_microphone", max_length=100)
+
+
+class CompanionPairingStartRequest(BaseModel):
+    device_name: str = Field(default="iPhone", max_length=120)
+    platform: str = Field(default="ios", max_length=40)
+
+
+class CompanionPairingCompleteRequest(BaseModel):
+    device_id: str = Field(min_length=1, max_length=200)
+    pairing_secret: str = Field(min_length=1, max_length=500)
+
+
+class CompanionQuickCaptureRequest(BaseModel):
+    device_id: str = Field(min_length=1, max_length=200)
+    envelope: dict[str, Any]
+
+
+class CompanionV2Model(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class CompanionV2PairingCompleteRequest(CompanionV2Model):
+    device_id: str = Field(min_length=1, max_length=200)
+    pairing_token: str = Field(min_length=32, max_length=200)
+    key_agreement_public_key: str = Field(min_length=32, max_length=200)
+    approval_public_key: str = Field(min_length=32, max_length=300)
+
+
+class CompanionV2PresenceRequest(CompanionV2Model):
+    state: Literal["active", "idle", "background"]
+    ttl_seconds: int = Field(default=120, ge=15, le=120)
+
+
+class CompanionV2SyncAckRequest(CompanionV2Model):
+    sequence_number: int = Field(ge=0, le=9_223_372_036_854_775_807)
+
+
+class CompanionV2ChatRequest(CompanionV2Model):
+    message: str = Field(min_length=1, max_length=8000)
+
+
+class CompanionV2ApprovalDecisionRequest(CompanionV2Model):
+    decision: Literal["approve", "reject"]
+    timestamp: str = Field(min_length=20, max_length=50)
+    signature: str = Field(min_length=32, max_length=1000)
+    biometric_backed: bool = False
+
+
+class CompanionV2MemoryCreateRequest(CompanionV2Model):
+    text: str = Field(min_length=1, max_length=5000)
+    kind: str = Field(default="semantic", min_length=1, max_length=80)
+    confidence: float = Field(default=0.9, ge=0.0, le=1.0)
+    tags: list[str] = Field(default_factory=list, max_length=50)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class CompanionV2MemoryUpdateRequest(CompanionV2Model):
+    text: str | None = Field(default=None, min_length=1, max_length=5000)
+    kind: str | None = Field(default=None, min_length=1, max_length=80)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    owner_confirmed: bool | None = None
+    tags: list[str] | None = Field(default=None, max_length=50)
+    metadata: dict[str, Any] | None = None
+
+
+class CompanionV2QuickCaptureRequest(CompanionV2Model):
+    text: str = Field(min_length=1, max_length=5000)
+    capture_type: Literal["text", "url", "dictation"] = "text"
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentRunRequest(BaseModel):
@@ -271,16 +368,38 @@ class ToolCallPlan(BaseModel):
                 value["payload"] = {"path": normalized}
             elif tool_id == "filesystem.search_files":
                 value["payload"] = {"root": ".", "query": normalized, "include_content": True}
+            elif tool_id == "filesystem.move_path":
+                value["payload"] = {"source": normalized, "destination": normalized}
+            elif tool_id == "filesystem.create_zip":
+                value["payload"] = {"paths": [normalized], "destination": "archive.zip"}
+            elif tool_id == "filesystem.watch_start":
+                value["payload"] = {"root": normalized, "name": "watch"}
+            elif tool_id == "filesystem.watch_poll":
+                value["payload"] = {"watch_id": normalized, "update_baseline": True}
             elif tool_id == "filesystem.resolve_file_request":
                 value["payload"] = {"root": ".", "instruction": normalized, "query": normalized, "action": "reveal"}
             elif tool_id == "filesystem.open_file_choice":
                 value["payload"] = {"selection": int(normalized) if normalized.isdigit() else 1, "mode": "reveal"}
             elif tool_id in {"spreadsheet.inspect", "spreadsheet.analyze", "spreadsheet.write_analysis"}:
                 value["payload"] = {"path": normalized}
+            elif tool_id == "communications.email_draft":
+                value["payload"] = {"to": [], "subject": normalized, "body": normalized}
+            elif tool_id == "calendar.create_invite":
+                value["payload"] = {"title": normalized, "start": "", "end": ""}
             elif tool_id == "diagnostics.run_self_check":
                 value["payload"] = {"source": normalized or "model"}
             elif tool_id == "diagnostics.auto_repair":
                 value["payload"] = {"source": normalized or "model"}
+            elif tool_id == "security.scan_external_content":
+                value["payload"] = {
+                    "content": normalized,
+                    "source_type": "external",
+                    "origin_identifier": "model-provided-content",
+                }
+            elif tool_id == "voice.speak":
+                value["payload"] = {"text": normalized, "rate": 0, "volume": 85}
+            elif tool_id == "voice.listen_once":
+                value["payload"] = {"source": normalized or "desktop_microphone"}
             elif tool_id == "training.capability_plan":
                 value["payload"] = {}
             elif tool_id == "training.export_dataset":
@@ -301,6 +420,29 @@ class ToolCallPlan(BaseModel):
                 value["payload"] = {"window_title": normalized}
             elif tool_id == "windows.send_keys":
                 value["payload"] = {"keys": normalized}
+            elif tool_id == "windows.notify":
+                value["payload"] = {"title": "Project Q", "message": normalized}
+            elif tool_id == "windows.ocr_screenshot":
+                value["payload"] = {"image_path": normalized}
+            elif tool_id == "windows.screenshot_diff":
+                value["payload"] = {"before_image_path": normalized, "after_image_path": ""}
+            elif tool_id == "windows.app_state":
+                value["payload"] = {"process_name": normalized}
+            elif tool_id == "windows.focus_follow":
+                value["payload"] = {"query": normalized}
+            elif tool_id == "windows.inspect_ui_tree":
+                value["payload"] = {"window_title": normalized, "max_elements": 80}
+            elif tool_id == "windows.invoke_ui_element":
+                value["payload"] = {"window_title": normalized, "name": normalized}
+            elif tool_id == "windows.registry_read":
+                value["payload"] = {"path": "HKCU:\\Software\\ProjectQ", "name": normalized}
+            elif tool_id == "windows.registry_write":
+                value["payload"] = {
+                    "path": "HKCU:\\Software\\ProjectQ\\Settings",
+                    "name": normalized,
+                    "value": "",
+                    "value_kind": "String",
+                }
             else:
                 value["payload"] = {"value": normalized}
         return value

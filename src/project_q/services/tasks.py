@@ -7,8 +7,9 @@ from project_q.storage import Database
 
 
 class TaskService:
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, sync_service=None) -> None:
         self.db = db
+        self.sync_service = sync_service
 
     def create(self, payload: TaskCreate) -> dict[str, Any]:
         task_id = self.db.make_id("task")
@@ -35,7 +36,9 @@ class TaskService:
                     now,
                 ),
             )
-        return self.get(task_id)
+        created = self.get(task_id)
+        self._emit("created", created)
+        return created
 
     def list_all(self, limit: int = 200) -> list[dict[str, Any]]:
         with self.db.connection() as conn:
@@ -87,11 +90,23 @@ class TaskService:
                     task_id,
                 ),
             )
-        return self.get(task_id)
+        record = self.get(task_id)
+        self._emit("updated", record)
+        return record
 
     def delete(self, task_id: str) -> None:
         with self.db.connection() as conn:
             conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        self._emit("deleted", {"id": task_id})
+
+    def _emit(self, operation: str, payload: dict[str, Any]) -> None:
+        if self.sync_service is not None:
+            self.sync_service.append(
+                resource_type="task",
+                resource_id=str(payload["id"]),
+                operation=operation,
+                payload=payload,
+            )
 
     def _row_to_dict(self, row: Any) -> dict[str, Any]:
         return {
@@ -106,4 +121,3 @@ class TaskService:
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
-

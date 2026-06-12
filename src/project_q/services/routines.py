@@ -7,8 +7,9 @@ from project_q.storage import Database
 
 
 class RoutineService:
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, sync_service=None) -> None:
         self.db = db
+        self.sync_service = sync_service
 
     def create(self, payload: RoutineCreate) -> dict[str, Any]:
         routine_id = self.db.make_id("routine")
@@ -38,7 +39,9 @@ class RoutineService:
                     now,
                 ),
             )
-        return self.get(routine_id)
+        created = self.get(routine_id)
+        self._emit("created", created)
+        return created
 
     def list_all(self, limit: int = 200) -> list[dict[str, Any]]:
         with self.db.connection() as conn:
@@ -124,11 +127,23 @@ class RoutineService:
                     routine_id,
                 ),
             )
-        return self.get(routine_id)
+        record = self.get(routine_id)
+        self._emit("updated", record)
+        return record
 
     def delete(self, routine_id: str) -> None:
         with self.db.connection() as conn:
             conn.execute("DELETE FROM routines WHERE id = ?", (routine_id,))
+        self._emit("deleted", {"id": routine_id})
+
+    def _emit(self, operation: str, payload: dict[str, Any]) -> None:
+        if self.sync_service is not None:
+            self.sync_service.append(
+                resource_type="routine",
+                resource_id=str(payload["id"]),
+                operation=operation,
+                payload=payload,
+            )
 
     def _normalize_tools(self, explicit_tools: list[str], steps: list[dict[str, Any]]) -> list[str]:
         tool_ids = list(explicit_tools)
