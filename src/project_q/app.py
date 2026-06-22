@@ -174,6 +174,7 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
     tasks = TaskService(db, sync)
     agents = AgentService(db, sync)
     routines = RoutineService(db, sync)
+    memory.set_routine_service(routines)
     workflows = WorkflowService(db, sync)
     control = ControlService(settings, audit, owner_auth=owner_auth, sync_service=sync)
     vault = VaultService(db)

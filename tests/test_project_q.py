@@ -439,7 +439,7 @@ class ProjectQApplicationTests(unittest.TestCase):
 
         self.assertTrue(required_tables.issubset(tables))
         self.assertTrue(required_device_columns.issubset(device_columns))
-        self.assertEqual([row["version"] for row in migration_rows], [1, 2, 3])
+        self.assertEqual([row["version"] for row in migration_rows], [1, 2, 3, 4])
 
     def test_companion_crypto_derives_direction_separated_session_keys(self) -> None:
         from project_q.services.companion_crypto import CompanionCryptoService
