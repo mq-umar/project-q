@@ -3,31 +3,30 @@ import SwiftUI
 struct ContentView: View {
     var body: some View {
         TabView {
-            DashboardView()
+            ActivityView()
                 .tabItem {
-                    Label("Dashboard", systemImage: "sparkles.rectangle.stack")
+                    Label("Activity", systemImage: "waveform.path.ecg")
                 }
 
-            TaskListView()
+            ChatView()
                 .tabItem {
-                    Label("Tasks", systemImage: "checklist")
+                    Label("Chat", systemImage: "bubble.left.and.bubble.right")
                 }
 
-            AgentListView()
+            ApprovalsView()
                 .tabItem {
-                    Label("Agents", systemImage: "person.3.sequence")
+                    Label("Approvals", systemImage: "checkmark.shield")
                 }
 
-            AuditView()
+            RoutinesView()
                 .tabItem {
-                    Label("Audit", systemImage: "doc.text.magnifyingglass")
+                    Label("Routines", systemImage: "play.square.stack")
                 }
 
-            SettingsView()
+            MoreView()
                 .tabItem {
-                    Label("Settings", systemImage: "gearshape")
+                    Label("More", systemImage: "ellipsis.circle")
                 }
         }
     }
 }
-

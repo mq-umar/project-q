@@ -4,9 +4,23 @@ from pathlib import Path
 from typing import Any
 
 from project_q.models import AgentCreate, MemoryCreate, ReasonerPlan, RoutineCreate, TaskCreate
+from project_q.services.sync import SyncEventService
 
 
 class PlanExecutorService:
+    # Tools whose output is Zone 3 external content and must be trust-scanned/labeled
+    # before it is composed into a reply or persisted (and thus re-injected next turn).
+    _EXTERNAL_CONTENT_TOOLS = frozenset(
+        {
+            "browser.inspect_page",
+            "browser.run_actions",
+            "browser.complete_goal",
+            "outlook.email_read",
+            "outlook.email_list",
+            "outlook.calendar_list",
+        }
+    )
+
     def __init__(
         self,
         memory_service,
@@ -18,6 +32,8 @@ class PlanExecutorService:
         audit_service,
         artifact_service,
         code_repair_service,
+        approval_service=None,
+        trust_service=None,
     ) -> None:
         self.memory_service = memory_service
         self.task_service = task_service
@@ -28,6 +44,8 @@ class PlanExecutorService:
         self.audit_service = audit_service
         self.artifact_service = artifact_service
         self.code_repair_service = code_repair_service
+        self.approval_service = approval_service
+        self.trust_service = trust_service
 
     def execute(
         self,
@@ -35,6 +53,12 @@ class PlanExecutorService:
         plan: ReasonerPlan,
         owner_approved: bool,
         input_sources: list[str],
+        session_id: str = "",
+        originating_goal: str = "",
+        model: str = "",
+        plan_id: str = "",
+        max_tool_calls: int | None = None,
+        allowed_tool_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         created_task_ids: list[str] = []
         created_memory_ids: list[str] = []
@@ -42,6 +66,7 @@ class PlanExecutorService:
         created_routine_ids: list[str] = []
         executed_tools: list[dict[str, Any]] = []
         blocked_tools: list[dict[str, Any]] = []
+        created_action_request_ids: list[str] = []
 
         for memory_plan in plan.memory_writes:
             memory = self.memory_service.create(
@@ -86,7 +111,10 @@ class PlanExecutorService:
                     description=routine_plan.description,
                     status=routine_plan.status,
                     trigger_type=routine_plan.trigger_type,
-                    trusted=routine_plan.trusted,
+                    # SECURITY: never honor a model-supplied trusted flag. A routine
+                    # becomes trusted only via an explicit owner action (dashboard/API),
+                    # otherwise model output could self-grant Tier 1-2 approval bypass.
+                    trusted=False,
                     tools=routine_plan.tools,
                     steps=routine_plan.steps,
                     notes=routine_plan.notes,
@@ -94,31 +122,106 @@ class PlanExecutorService:
             )
             created_routine_ids.append(routine["id"])
 
-        for tool_call in plan.tool_calls[:3]:
-            tool = self.tool_registry.get(tool_call.tool_id)
-            decision = self.policy_service.authorize_tool(
-                tier=tool.definition.tier,
-                owner_approved=owner_approved,
-            )
-            if not decision.allowed:
+        tool_limit = 3 if max_tool_calls is None else max(0, min(3, int(max_tool_calls)))
+        allowed_tools = set(allowed_tool_ids) if allowed_tool_ids is not None else None
+        for tool_call in plan.tool_calls[:tool_limit]:
+            if allowed_tools is not None and tool_call.tool_id not in allowed_tools:
                 blocked_tools.append(
                     {
                         "tool_id": tool_call.tool_id,
-                        "reason": decision.reason,
-                        "payload": tool_call.payload,
+                        "reason": "tool is not in the agent whitelist",
+                        "payload": SyncEventService._redact(tool_call.payload),
                     }
                 )
+                self.audit_service.log(
+                    action_type="tool_execution",
+                    action_tier=0,
+                    tool_name=tool_call.tool_id,
+                    outcome="blocked",
+                    input_sources=input_sources,
+                    metadata={"reason": "tool is not in the agent whitelist"},
+                )
+                continue
+            try:
+                tool = self.tool_registry.get(tool_call.tool_id)
+            except KeyError:
+                # A hallucinated or injected tool id must not abort the whole turn.
+                blocked_tools.append(
+                    {
+                        "tool_id": tool_call.tool_id,
+                        "reason": "unknown tool id",
+                        "payload": SyncEventService._redact(tool_call.payload),
+                    }
+                )
+                self.audit_service.log(
+                    action_type="tool_execution",
+                    action_tier=0,
+                    tool_name=tool_call.tool_id,
+                    outcome="blocked",
+                    input_sources=input_sources,
+                    metadata={"reason": "unknown tool id"},
+                )
+                continue
+            decision = self.policy_service.authorize_tool(
+                tier=tool.definition.tier,
+                owner_approved=owner_approved,
+                input_sources=input_sources,
+                tool_id=tool_call.tool_id,
+            )
+            if not decision.allowed:
+                blocked = {
+                    "tool_id": tool_call.tool_id,
+                    "reason": decision.reason,
+                    "payload": SyncEventService._redact(tool_call.payload),
+                }
+                if (
+                    self.approval_service is not None
+                    and tool.definition.tier in {2, 3}
+                    and decision.reason == f"tier {tool.definition.tier} requires owner approval"
+                ):
+                    action_request = self.approval_service.create_request(
+                        tool_id=tool_call.tool_id,
+                        action_tier=tool.definition.tier,
+                        payload=tool_call.payload,
+                        summary=tool_call.reason or f"Run {tool.definition.name}",
+                        session_id=session_id,
+                        originating_goal=originating_goal or plan.reply,
+                        input_sources=input_sources,
+                        model=model,
+                        plan_id=plan_id,
+                    )
+                    blocked["action_request_id"] = action_request["id"]
+                    blocked["payload"] = action_request["redacted_preview"]
+                    created_action_request_ids.append(action_request["id"])
+                blocked_tools.append(blocked)
                 self.audit_service.log(
                     action_type="tool_execution",
                     action_tier=tool.definition.tier,
                     tool_name=tool_call.tool_id,
                     outcome="blocked",
                     input_sources=input_sources,
-                    metadata={"reason": decision.reason, "payload": tool_call.payload},
+                    metadata={
+                        "reason": decision.reason,
+                        "payload": SyncEventService._redact(tool_call.payload),
+                        "action_request_id": blocked.get("action_request_id", ""),
+                    },
                 )
                 continue
 
             result = tool.execute(tool_call.payload)
+            external_origin = tool_call.tool_id in self._EXTERNAL_CONTENT_TOOLS
+            if external_origin and isinstance(result, dict):
+                scanned = self._scan_external_result(tool_call.tool_id, result)
+                if scanned is not None:
+                    result["trust"] = {
+                        "trust_zone": scanned["trust_zone"],
+                        "source_type": scanned["source_type"],
+                        "origin_identifier": scanned["origin_identifier"],
+                        "risk_level": scanned["risk_level"],
+                        "suspicious": scanned["suspicious"],
+                        "finding_ids": scanned["finding_ids"],
+                        "safe_summary_context": scanned["safe_summary_context"],
+                    }
             validation = self._validate_artifact(tool_call.tool_id, result)
             if validation is not None:
                 validation = self._repair_artifact_if_needed(tool_call.tool_id, result, validation)
@@ -138,6 +241,7 @@ class PlanExecutorService:
                     "reason": tool_call.reason,
                     "payload": tool_call.payload,
                     "result": result,
+                    "external_origin": external_origin,
                 }
             )
             self.audit_service.log(
@@ -157,7 +261,49 @@ class PlanExecutorService:
             "created_routine_ids": created_routine_ids,
             "executed_tools": executed_tools,
             "blocked_tools": blocked_tools,
+            "created_action_request_ids": created_action_request_ids,
+            "usage": {
+                "planned_tool_calls": len(plan.tool_calls),
+                "tool_calls_considered": min(len(plan.tool_calls), tool_limit),
+                "tool_calls": len(executed_tools),
+                "blocked_tool_calls": len(blocked_tools),
+            },
         }
+
+    def _scan_external_result(self, tool_id: str, result: dict[str, Any]) -> dict[str, Any] | None:
+        if self.trust_service is None:
+            return None
+        text = self._extract_external_text(result)
+        if not text:
+            return None
+        source_type = "email" if tool_id.startswith("outlook.") else "web_page"
+        origin = str(
+            result.get("url")
+            or result.get("path")
+            or result.get("entry_id")
+            or result.get("origin")
+            or tool_id
+        )[:300]
+        return self.trust_service.scan_external_content(
+            content=text, source_type=source_type, origin_identifier=origin
+        )
+
+    @staticmethod
+    def _extract_external_text(result: dict[str, Any]) -> str:
+        parts: list[str] = []
+        for key in ("text_excerpt", "text", "body", "content", "summary", "answer"):
+            value = result.get(key)
+            if isinstance(value, str) and value.strip():
+                parts.append(value)
+        items = result.get("items") or result.get("emails") or result.get("events")
+        if isinstance(items, list):
+            for entry in items[:20]:
+                if isinstance(entry, dict):
+                    for key in ("subject", "preview", "body", "summary", "snippet", "text"):
+                        value = entry.get(key)
+                        if isinstance(value, str) and value.strip():
+                            parts.append(value)
+        return "\n".join(parts)[:8000]
 
     @staticmethod
     def compose_reply(
@@ -173,7 +319,12 @@ class PlanExecutorService:
             validation_lines = []
             for item in executed_tools:
                 result = item["result"]
-                if item["tool_id"] == "filesystem.resolve_file_request":
+                if item.get("external_origin") and isinstance(result.get("trust"), dict):
+                    # Surface the labeled untrusted-data envelope, not raw external
+                    # text, so persisted/re-injected content stays tagged as Zone 3.
+                    preview = result["trust"].get("safe_summary_context") or "(external content received)"
+                    preview_limit = 900
+                elif item["tool_id"] == "filesystem.resolve_file_request":
                     preview = PlanExecutorService._format_file_resolution_result(result)
                     preview_limit = 1400
                 elif item["tool_id"] == "filesystem.open_file_choice":

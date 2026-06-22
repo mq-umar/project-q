@@ -1,17 +1,138 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import os
 import re
+import secrets
+import socket
 import subprocess
+import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, urlparse, urlunparse
 
 from project_q.runtime import discover_node_executable, discover_node_modules_path
+from project_q.tools.access import resolve_allowed_path
 from project_q.tools.base import ToolDefinition
 from project_q.tools.windows import WindowsOpenUrlTool
+
+
+_BROWSER_PROFILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_BROWSER_PROFILE_LOCK = threading.RLock()
+_BROWSER_ACTION_TYPES = {
+    "goto",
+    "click",
+    "fill",
+    "press",
+    "wait_for_selector",
+    "wait_for_timeout",
+    "extract_text",
+    "screenshot",
+    "select_option",
+    "check",
+    "uncheck",
+    "hover",
+    "new_tab",
+    "switch_tab",
+    "close_tab",
+    "download",
+    "upload",
+    "pause_for_owner",
+}
+
+
+def _validated_web_url(raw_url: str) -> str:
+    url = str(raw_url or "").strip()
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("browser tools only support http and https URLs")
+    if _is_private_network_host(parsed.hostname or ""):
+        raise PermissionError("browser tools do not inspect localhost or private network URLs")
+    if _hostname_resolves_to_private_network(parsed.hostname or ""):
+        raise PermissionError(
+            "browser tools do not inspect hostnames that resolve to private network addresses"
+        )
+    return url
+
+
+def _is_private_network_host(hostname: str) -> bool:
+    host = str(hostname or "").strip().strip("[]").rstrip(".").lower()
+    if not host:
+        return True
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return (
+        address.is_loopback
+        or address.is_private
+        or address.is_link_local
+        or address.is_unspecified
+        or address.is_reserved
+        or address.is_multicast
+    )
+
+
+def _hostname_resolves_to_private_network(hostname: str) -> bool:
+    host = str(hostname or "").strip().strip("[]").rstrip(".")
+    if not host:
+        return True
+    try:
+        addresses = socket.getaddrinfo(
+            host,
+            None,
+            family=socket.AF_UNSPEC,
+            type=socket.SOCK_STREAM,
+        )
+    except OSError:
+        return False
+    return any(
+        _is_private_network_host(str(sockaddr[0]))
+        for _family, _socktype, _proto, _canonname, sockaddr in addresses
+        if sockaddr
+    )
+
+
+def _validated_browser_actions(raw_actions: Any) -> list[dict[str, Any]]:
+    if raw_actions is None:
+        return []
+    if not isinstance(raw_actions, list):
+        raise ValueError("browser actions must be a list")
+    if len(raw_actions) > 50:
+        raise ValueError("browser actions are limited to 50 steps")
+
+    validated: list[dict[str, Any]] = []
+    for index, raw_action in enumerate(raw_actions):
+        if not isinstance(raw_action, dict):
+            raise ValueError(f"browser action {index + 1} must be an object")
+        action = dict(raw_action)
+        action_type = str(action.get("type", "")).strip()
+        if action_type not in _BROWSER_ACTION_TYPES:
+            raise ValueError(f"unsupported browser action type: {action_type or '(missing)'}")
+        action["type"] = action_type
+
+        if action_type in {"goto", "new_tab"}:
+            action["url"] = _validated_web_url(action.get("url", ""))
+        if "selector" in action and len(str(action["selector"])) > 2000:
+            raise ValueError("browser action selector is too long")
+        if "value" in action and len(str(action["value"])) > 100_000:
+            raise ValueError("browser action value is too long")
+        if action_type in {"wait_for_timeout", "pause_for_owner"}:
+            timeout_ms = int(action.get("timeout_ms", 1000))
+            if timeout_ms < 0 or timeout_ms > 300_000:
+                raise ValueError("browser action timeout_ms must be between 0 and 300000")
+            action["timeout_ms"] = timeout_ms
+        if action_type == "switch_tab":
+            tab_index = int(action.get("index", -1))
+            if tab_index < 0 or tab_index > 49:
+                raise ValueError("browser tab index must be between 0 and 49")
+            action["index"] = tab_index
+        validated.append(action)
+    return validated
 
 
 class BrowserInspectTool:
@@ -34,9 +155,9 @@ class BrowserInspectTool:
         return self._run_worker(
             {
                 "mode": "inspect",
-                "url": payload["url"],
+                "url": _validated_web_url(payload["url"]),
                 "browser_type": payload.get("browser_type", "chromium"),
-                "headless": bool(payload.get("headless", settings.get("browser_headless", True))),
+                "headless": bool(payload.get("headless", True)),
                 "channel": payload.get("channel", settings.get("browser_channel", "msedge")),
                 "executable_path": payload.get("executable_path", settings.get("browser_executable_path", "")),
                 "timeout_seconds": int(payload.get("timeout_seconds", 25)),
@@ -45,11 +166,55 @@ class BrowserInspectTool:
             }
         )
 
+    def self_test(self) -> dict[str, Any]:
+        settings = self.settings_service.get_all() if self.settings_service is not None else {}
+        probe_token = secrets.token_urlsafe(18)
+        profile_dir = (
+            self.data_root / "browser_profiles" / "self-test"
+        ).resolve()
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        download_dir = (
+            self.data_root / "browser_artifacts" / "downloads"
+        ).resolve()
+        download_dir.mkdir(parents=True, exist_ok=True)
+        upload_probe = (
+            self.data_root / "browser_artifacts" / "browser-self-test-upload.txt"
+        ).resolve()
+        upload_probe.write_text("Project Q upload self-test", encoding="utf-8")
+        job = {
+            "mode": "self_test",
+            "browser_type": "chromium",
+            "headless": True,
+            "channel": settings.get("browser_channel", "msedge"),
+            "executable_path": settings.get("browser_executable_path", ""),
+            "timeout_seconds": 30,
+            "screenshot_path": self._build_screenshot_path(
+                {"screenshot_name": "browser-self-test.png"}
+            ),
+            "user_data_dir": str(profile_dir),
+            "profile_probe": probe_token,
+            "download_dir": str(download_dir),
+            "self_test_upload_path": str(upload_probe),
+        }
+        self._run_worker(job)
+        result = self._run_worker(job)
+        checks = dict(result.get("checks", {}))
+        checks["persistence"] = (
+            result.get("previous_profile_probe") == probe_token
+        )
+        result["checks"] = checks
+        return result
+
     def _build_screenshot_path(self, payload: dict[str, Any]) -> str:
         artifacts = self.data_root / "browser_artifacts"
         artifacts.mkdir(parents=True, exist_ok=True)
-        filename = payload.get("screenshot_name", "page.png")
-        return str((artifacts / filename).resolve())
+        filename = str(payload.get("screenshot_name", "page.png") or "page.png")
+        if Path(filename).is_absolute() or Path(filename).name != filename:
+            raise ValueError("screenshot_name must be a simple file name")
+        target = (artifacts / filename).resolve()
+        if not target.is_relative_to(artifacts.resolve()):
+            raise ValueError("screenshot path is outside browser artifacts")
+        return str(target)
 
     def _run_worker(self, job: dict[str, Any]) -> dict[str, Any]:
         if not self.node_path:
@@ -58,7 +223,18 @@ class BrowserInspectTool:
             raise RuntimeError("Node modules path not found for browser worker")
 
         env = os.environ.copy()
-        env["NODE_PATH"] = self.node_modules_path
+        module_paths = [self.node_modules_path]
+        pnpm_modules = Path(self.node_modules_path) / ".pnpm" / "node_modules"
+        if pnpm_modules.is_dir():
+            module_paths.append(str(pnpm_modules))
+        existing_node_path = env.get("NODE_PATH", "")
+        if existing_node_path:
+            module_paths.extend(
+                path
+                for path in existing_node_path.split(os.pathsep)
+                if path and path not in module_paths
+            )
+        env["NODE_PATH"] = os.pathsep.join(module_paths)
 
         completed = subprocess.run(
             [self.node_path, str(self.worker_script), json.dumps(job)],
@@ -66,7 +242,7 @@ class BrowserInspectTool:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=min(int(job.get("timeout_seconds", 25)) + 10, 60),
+            timeout=min(int(job.get("timeout_seconds", 25)) + 10, 330),
             check=False,
             env=env,
         )
@@ -89,21 +265,96 @@ class BrowserActionsTool(BrowserInspectTool):
         tier=2,
     )
 
+    def __init__(
+        self,
+        data_root: Path,
+        settings_service=None,
+        *,
+        workspace_root: Path | None = None,
+    ) -> None:
+        super().__init__(data_root, settings_service)
+        self.workspace_root = (workspace_root or data_root.parent).resolve()
+
     def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
         settings = self.settings_service.get_all() if self.settings_service is not None else {}
-        return self._run_worker(
-            {
-                "mode": "actions",
-                "url": payload["url"],
-                "actions": payload.get("actions", []),
-                "browser_type": payload.get("browser_type", "chromium"),
-                "headless": bool(payload.get("headless", settings.get("browser_headless", True))),
-                "channel": payload.get("channel", settings.get("browser_channel", "msedge")),
-                "executable_path": payload.get("executable_path", settings.get("browser_executable_path", "")),
-                "timeout_seconds": int(payload.get("timeout_seconds", 30)),
-                "screenshot_path": self._build_screenshot_path(payload) if payload.get("screenshot") else "",
-            }
+        actions = _validated_browser_actions(payload.get("actions", []))
+        actions = self._resolve_upload_actions(actions)
+        requested_timeout = int(payload.get("timeout_seconds", 30))
+        if requested_timeout < 5 or requested_timeout > 300:
+            raise ValueError("browser timeout_seconds must be between 5 and 300")
+        longest_action_seconds = max(
+            (
+                int(action.get("timeout_ms", 0)) / 1000 + 5
+                for action in actions
+                if action["type"] in {"wait_for_timeout", "pause_for_owner"}
+            ),
+            default=0,
         )
+        job = {
+            "mode": "actions",
+            "url": _validated_web_url(payload["url"]),
+            "actions": actions,
+            "browser_type": payload.get("browser_type", "chromium"),
+            "headless": bool(payload.get("headless", settings.get("browser_headless", False))),
+            "channel": payload.get("channel", settings.get("browser_channel", "msedge")),
+            "executable_path": payload.get(
+                "executable_path",
+                settings.get("browser_executable_path", ""),
+            ),
+            "timeout_seconds": min(
+                300,
+                max(requested_timeout, int(longest_action_seconds)),
+            ),
+            "screenshot_path": self._build_screenshot_path(payload)
+            if payload.get("screenshot")
+            else "",
+            "user_data_dir": self._build_profile_dir(payload),
+            "download_dir": self._build_download_dir(),
+        }
+        with _BROWSER_PROFILE_LOCK:
+            return self._run_worker(job)
+
+    def _build_profile_dir(self, payload: dict[str, Any]) -> str:
+        profile_name = str(payload.get("profile", "default") or "default").strip()
+        if not _BROWSER_PROFILE_NAME.fullmatch(profile_name) or profile_name in {".", ".."}:
+            raise ValueError(
+                "browser profile must use 1-64 letters, numbers, dots, dashes, or underscores"
+            )
+        profiles_root = (self.data_root / "browser_profiles").resolve()
+        profiles_root.mkdir(parents=True, exist_ok=True)
+        target = (profiles_root / profile_name).resolve()
+        if not target.is_relative_to(profiles_root):
+            raise ValueError("browser profile path is outside browser profiles")
+        target.mkdir(parents=True, exist_ok=True)
+        return str(target)
+
+    def _build_download_dir(self) -> str:
+        downloads = (self.data_root / "browser_artifacts" / "downloads").resolve()
+        downloads.mkdir(parents=True, exist_ok=True)
+        return str(downloads)
+
+    def _resolve_upload_actions(
+        self,
+        actions: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        resolved_actions: list[dict[str, Any]] = []
+        for action in actions:
+            resolved_action = dict(action)
+            if action["type"] == "upload":
+                upload_path = resolve_allowed_path(
+                    action.get("path", ""),
+                    workspace_root=self.workspace_root,
+                    data_root=self.data_root,
+                    settings_service=self.settings_service,
+                    must_exist=True,
+                )
+                if not upload_path.is_file():
+                    raise ValueError("browser upload path must be a file")
+                if upload_path.stat().st_size > 100 * 1024 * 1024:
+                    raise ValueError("browser uploads are limited to 100 MiB")
+                resolved_action["path"] = str(upload_path)
+            resolved_actions.append(resolved_action)
+        return resolved_actions
 
 
 @dataclass(slots=True)

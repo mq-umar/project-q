@@ -7,8 +7,9 @@ from project_q.storage import Database
 
 
 class AuditService:
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, sync_service=None) -> None:
         self.db = db
+        self.sync_service = sync_service
 
     def log(
         self,
@@ -46,6 +47,25 @@ class AuditService:
                     self.db.dumps(metadata or {}),
                 ),
             )
+        if self.sync_service is not None:
+            self.sync_service.append(
+                resource_type="audit",
+                resource_id=entry_id,
+                operation="created",
+                payload={
+                    "id": entry_id,
+                    "timestamp": utc_now(),
+                    "action_type": action_type,
+                    "action_tier": action_tier,
+                    "tool_name": tool_name,
+                    "model": model,
+                    "input_sources": input_sources or [],
+                    "approved_by_owner": approved_by_owner,
+                    "outcome": outcome,
+                    "error": error,
+                    "metadata": metadata or {},
+                },
+            )
         return entry_id
 
     def list_recent(self, limit: int = 200) -> list[dict[str, Any]]:
@@ -54,7 +74,7 @@ class AuditService:
                 """
                 SELECT *
                 FROM audit_log
-                ORDER BY timestamp DESC
+                ORDER BY timestamp DESC, rowid DESC
                 LIMIT ?
                 """,
                 (limit,),
@@ -75,4 +95,3 @@ class AuditService:
             }
             for row in rows
         ]
-

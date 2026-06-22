@@ -25,13 +25,31 @@ DEFAULT_SETTINGS = {
     "ollama_reasoning_model": "deepseek-r1:7b",
     "ollama_fast_model": "llama3.1:8b",
     "provider_timeout_seconds": 120,
-    "browser_headless": True,
+    "browser_headless": False,
     "browser_channel": "msedge",
     "browser_executable_path": "",
     "file_access_roots": [],
     "learning_enabled": False,
     "learning_interval_seconds": 300,
     "learning_max_cycles_per_start": 12,
+    "kill_switch_active": False,
+    "kill_switch_reason": "",
+    "kill_switch_activated_at": "",
+    "kill_switch_source": "",
+    # §12.1 Behavior Profiles
+    "approval_policy": "ask_on_risky",
+    "proactive_mode": "active",
+    "screen_context": "manual",
+    "network_policy": "selected_services",
+    "execution_environment": "sandbox_first",
+    "voice_mode": "push_to_talk",
+    # Retention & scheduler
+    "memory_retention_days": 90,
+    "git_workspace": "",
+    "scheduler_enabled": True,
+    "metrics_enabled": True,
+    "outlook_enabled": False,
+    "auto_reflect_on_tasks": False,
 }
 
 

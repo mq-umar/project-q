@@ -67,9 +67,42 @@ class VaultService:
         with self.db.connection() as conn:
             conn.execute("DELETE FROM secrets WHERE name = ?", (name,))
 
+    # Versioned scheme prefix so a plaintext (dev) blob can never be silently
+    # mistaken for a DPAPI ciphertext, and vice-versa, across platforms.
+    _MAGIC = b"PQv1"
+
     def _encrypt(self, plaintext: bytes) -> bytes:
-        if not self.is_windows:
-            return plaintext
+        if self.is_windows:
+            return self._MAGIC + b"D" + self._dpapi_protect(plaintext)
+        # Non-Windows is development/CI only — there is no OS secure store here.
+        # Tag explicitly ('P') so the absence of real encryption is detectable
+        # and a DPAPI blob can never be returned as if it were plaintext.
+        return self._MAGIC + b"P" + plaintext
+
+    def _decrypt(self, encrypted: bytes) -> bytes:
+        if encrypted[:4] == self._MAGIC:
+            scheme = encrypted[4:5]
+            payload = encrypted[5:]
+            if scheme == b"D":
+                if not self.is_windows:
+                    raise OSError("DPAPI-sealed secret cannot be decrypted off Windows")
+                return self._dpapi_unprotect(payload)
+            if scheme == b"P":
+                return payload
+            raise ValueError("unrecognized secret encryption scheme")
+        # Legacy blobs written before scheme tagging: bare DPAPI on Windows,
+        # bare plaintext elsewhere. Preserve backward compatibility.
+        if self.is_windows:
+            return self._dpapi_unprotect(encrypted)
+        return encrypted
+
+    def scheme(self, encrypted: bytes) -> str:
+        """Return the at-rest protection scheme of a stored blob (for audits)."""
+        if encrypted[:4] == self._MAGIC:
+            return {b"D": "dpapi", b"P": "plaintext"}.get(encrypted[4:5], "unknown")
+        return "dpapi-legacy" if self.is_windows else "plaintext-legacy"
+
+    def _dpapi_protect(self, plaintext: bytes) -> bytes:
         in_buffer = ctypes.create_string_buffer(plaintext)
         in_blob = DATA_BLOB(len(plaintext), in_buffer)
         out_blob = DATA_BLOB()
@@ -90,9 +123,7 @@ class VaultService:
         finally:
             kernel32.LocalFree(out_blob.pbData)
 
-    def _decrypt(self, encrypted: bytes) -> bytes:
-        if not self.is_windows:
-            return encrypted
+    def _dpapi_unprotect(self, encrypted: bytes) -> bytes:
         in_buffer = ctypes.create_string_buffer(encrypted)
         in_blob = DATA_BLOB(len(encrypted), in_buffer)
         out_blob = DATA_BLOB()

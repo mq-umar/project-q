@@ -1,0 +1,125 @@
+name: ProjectQCompanion
+options:
+  bundleIdPrefix: com.projectq
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "16.0"
+configs:
+  Debug: debug
+  Release: release
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: 0.2.0
+    ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
+targets:
+  ProjectQCompanion:
+    type: application
+    platform: iOS
+    sources:
+      - path: ProjectQCompanion/ProjectQCompanionApp.swift
+      - path: ProjectQCompanion/AppDelegate.swift
+      - path: ProjectQCompanion/ContentView.swift
+      - path: ProjectQCompanion/Features
+      - path: ProjectQCompanion/Intents
+      - path: Shared
+    configFiles:
+      Debug: Config/Debug.xcconfig
+      Release: Config/Release.xcconfig
+    entitlements:
+      path: Config/ProjectQCompanion.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.projectq.companion
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Project Q
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+        INFOPLIST_KEY_NSFaceIDUsageDescription: Approve sensitive Project Q actions.
+        INFOPLIST_KEY_NSCameraUsageDescription: Scan the Project Q pairing QR code.
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: Speak to Project Q.
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: Convert speech into editable Project Q messages.
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: Connect directly to your Project Q Windows runtime.
+        INFOPLIST_KEY_NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        INFOPLIST_KEY_ProjectQKeychainAccessGroup: "$(AppIdentifierPrefix)com.projectq.companion.shared"
+        INFOPLIST_KEY_ProjectQAPNsEnvironment: "$(PROJECT_Q_APNS_ENVIRONMENT)"
+        INFOPLIST_KEY_UIBackgroundModes:
+          - fetch
+          - processing
+          - remote-notification
+        INFOPLIST_KEY_BGTaskSchedulerPermittedIdentifiers:
+          - com.projectq.companion.refresh
+          - com.projectq.companion.processing
+        INFOPLIST_KEY_CFBundleURLTypes:
+          - CFBundleURLName: com.projectq.companion
+            CFBundleURLSchemes:
+              - projectq
+    dependencies:
+      - target: ProjectQWidgetExtension
+        embed: true
+      - target: ProjectQShareExtension
+        embed: true
+
+  ProjectQWidgetExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: ProjectQWidgetExtension
+      - path: Shared/Models/CompanionModels.swift
+      - path: Shared/Security/CompanionCrypto.swift
+      - path: Shared/Security/KeychainStore.swift
+      - path: Shared/Storage/EncryptedCache.swift
+    entitlements:
+      path: Config/ProjectQWidget.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.projectq.companion.widget
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Project Q Status
+        INFOPLIST_KEY_ProjectQKeychainAccessGroup: "$(AppIdentifierPrefix)com.projectq.companion.shared"
+        INFOPLIST_KEY_NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+
+  ProjectQShareExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: ProjectQShareExtension
+      - path: Shared/Models/CompanionModels.swift
+      - path: Shared/Security/CompanionCrypto.swift
+      - path: Shared/Security/KeychainStore.swift
+      - path: Shared/Storage/EncryptedCache.swift
+      - path: Shared/Sync/OfflineQueue.swift
+    entitlements:
+      path: Config/ProjectQShare.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.projectq.companion.share
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Capture to Project Q
+        INFOPLIST_KEY_ProjectQKeychainAccessGroup: "$(AppIdentifierPrefix)com.projectq.companion.shared"
+        INFOPLIST_KEY_NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).ShareViewController"
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsWebURLWithMaxCount: 1
+              NSExtensionActivationSupportsFileWithMaxCount: 5
+
+  ProjectQCompanionTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ProjectQCompanionTests
+    resources:
+      - path: ProjectQCompanionTests/Fixtures
+    dependencies:
+      - target: ProjectQCompanion
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.projectq.companion.tests
+        GENERATE_INFOPLIST_FILE: YES

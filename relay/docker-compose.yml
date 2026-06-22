@@ -1,0 +1,43 @@
+services:
+  project-q-relay:
+    build:
+      context: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      PROJECT_Q_RELAY_DB: /data/project_q_relay.db
+      PROJECT_Q_RELAY_MAX_ENVELOPE_BYTES: ${PROJECT_Q_RELAY_MAX_ENVELOPE_BYTES:-524288}
+      PROJECT_Q_RELAY_RETENTION_SECONDS: ${PROJECT_Q_RELAY_RETENTION_SECONDS:-604800}
+      PROJECT_Q_RELAY_OWNER_ID: ${PROJECT_Q_RELAY_OWNER_ID:-project-q-owner}
+      PROJECT_Q_RELAY_BOOTSTRAP_TOKEN: ${PROJECT_Q_RELAY_BOOTSTRAP_TOKEN:-}
+      PROJECT_Q_RELAY_APNS_ROUTE_KEY: ${PROJECT_Q_RELAY_APNS_ROUTE_KEY:-}
+      PROJECT_Q_APNS_TEAM_ID: ${PROJECT_Q_APNS_TEAM_ID:-}
+      PROJECT_Q_APNS_KEY_ID: ${PROJECT_Q_APNS_KEY_ID:-}
+      PROJECT_Q_APNS_BUNDLE_ID: ${PROJECT_Q_APNS_BUNDLE_ID:-}
+      PROJECT_Q_APNS_PRIVATE_KEY_FILE: ${PROJECT_Q_APNS_PRIVATE_KEY_FILE:-}
+    volumes:
+      - relay-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.0
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  relay-data:

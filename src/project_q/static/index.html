@@ -3,306 +3,838 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Project Q</title>
+    <title>Project Q — Executive Agent</title>
+    <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
+
+    <!-- Particle background -->
+    <canvas id="bgCanvas"></canvas>
+
+    <!-- Scan line sweep -->
+    <div class="scan-sweep" aria-hidden="true"></div>
+
     <div class="app-shell">
-      <header class="hero">
-        <div>
-          <p class="eyebrow">Private Executive Agent</p>
-          <h1>Project Q</h1>
-          <p class="hero-copy">
-            Windows-first local runtime for orchestration, memory, agents, audit,
-            and secure execution.
-          </p>
+
+      <!-- ── Sidebar ─────────────────────────────────────────────── -->
+      <aside class="sidebar" id="sidebar">
+
+        <div class="sidebar-brand">
+          <div class="brand-mark">
+            <div class="brand-rings">
+              <div class="ring ring-1"></div>
+              <div class="ring ring-2"></div>
+            </div>
+            <span class="brand-core-letter">Q</span>
+          </div>
+          <div class="brand-text">
+            <span class="brand-name">PROJECT Q</span>
+            <span class="brand-sub">Executive Agent</span>
+          </div>
         </div>
-        <div class="hero-actions">
-          <button id="refreshButton" class="secondary-button">Refresh</button>
-          <div class="status-pill" id="statusPill">Connecting...</div>
+
+        <div class="sidebar-status-row">
+          <span class="status-dot" id="statusDot"></span>
+          <span class="sidebar-status-text" id="sidebarStatusText">Initializing…</span>
         </div>
-      </header>
 
-      <main class="dashboard">
-        <section class="card chat-card">
-          <div class="card-header">
-            <div>
-              <p class="card-label">Conversation</p>
-              <h2>Operator Console</h2>
-            </div>
-          </div>
-          <div id="conversationFeed" class="conversation-feed"></div>
-          <form id="chatForm" class="chat-form">
-            <textarea
-              id="chatInput"
-              placeholder="Give Project Q a command, task, or memory..."
-              rows="4"
-            ></textarea>
-            <label class="checkbox-row">
-              <input id="chatApproval" type="checkbox" />
-              Allow this chat turn to execute higher-tier actions if needed
-            </label>
-            <div class="form-actions">
-              <button type="submit">Send</button>
-            </div>
-          </form>
-        </section>
+        <div class="sidebar-divider"></div>
 
-        <section class="card">
-          <div class="card-header">
-            <div>
-              <p class="card-label">Work Queue</p>
-              <h2>Tasks</h2>
-            </div>
-          </div>
-          <form id="taskForm" class="inline-form">
-            <input id="taskTitle" placeholder="Add a task title" />
-            <button type="submit">Add</button>
-          </form>
-          <div id="taskList" class="stack-list"></div>
-        </section>
+        <nav class="sidebar-nav">
+          <span class="nav-group-label">Core Systems</span>
+          <a class="nav-link" href="#section-chat" data-section="chat">
+            <span class="ni">⌘</span><span>Operator Console</span>
+          </a>
+          <a class="nav-link" href="#section-tasks" data-section="tasks">
+            <span class="ni">☑</span><span>Task Queue</span>
+            <span class="nav-count" id="navTaskCount"></span>
+          </a>
+          <a class="nav-link" href="#section-memory" data-section="memory">
+            <span class="ni">◉</span><span>Memory Core</span>
+          </a>
 
-        <section class="card">
-          <div class="card-header">
-            <div>
-              <p class="card-label">Long-Term State</p>
-              <h2>Memory</h2>
-            </div>
-          </div>
-          <form id="memoryForm" class="inline-form">
-            <input id="memoryText" placeholder="Store a preference, fact, or lesson" />
-            <button type="submit">Store</button>
-          </form>
-          <div id="memoryList" class="stack-list"></div>
-        </section>
+          <span class="nav-group-label">Automation</span>
+          <a class="nav-link" href="#section-agents" data-section="agents">
+            <span class="ni">◆</span><span>Agent Registry</span>
+          </a>
+          <a class="nav-link" href="#section-templates" data-section="templates">
+            <span class="ni">⊞</span><span>Agent Templates</span>
+          </a>
+          <a class="nav-link" href="#section-workflows" data-section="workflows">
+            <span class="ni">W</span><span>Workflows</span>
+          </a>
+          <a class="nav-link" href="#section-routines" data-section="routines">
+            <span class="ni">↺</span><span>Routines</span>
+          </a>
+          <a class="nav-link" href="#section-dispatches" data-section="dispatches">
+            <span class="ni">▤</span><span>Dispatches</span>
+          </a>
+          <a class="nav-link" href="#section-metrics" data-section="metrics">
+            <span class="ni">◈</span><span>Metrics</span>
+          </a>
 
-        <section class="card">
-          <div class="card-header">
-            <div>
-              <p class="card-label">Build Operations</p>
-              <h2>Dispatches</h2>
-            </div>
-          </div>
-          <p class="helper-copy">
-            App, website, API, script, and repair requests are classified here with acceptance criteria and artifacts.
-          </p>
-          <div id="dispatchList" class="stack-list compact-list"></div>
-        </section>
+          <span class="nav-group-label">Intelligence</span>
+          <a class="nav-link" href="#section-learning" data-section="learning">
+            <span class="ni">⚡</span><span>Learning Lab</span>
+            <span class="nav-pulse" id="navLearningPulse"></span>
+          </a>
+          <a class="nav-link" href="#section-diagnostics" data-section="diagnostics">
+            <span class="ni">◎</span><span>Diagnostics</span>
+          </a>
+          <a class="nav-link" href="#section-training" data-section="training">
+            <span class="ni">⊕</span><span>Training Lab</span>
+          </a>
 
-        <section class="card">
-          <div class="card-header">
-            <div>
-              <p class="card-label">Idle Intelligence</p>
-              <h2>Learning Lab</h2>
-            </div>
-          </div>
-          <p id="learningStatusText" class="helper-copy">Learning Lab status loading...</p>
-          <div class="list-actions">
-            <button id="learningRunOnceButton" type="button" class="secondary-button">Run Once</button>
-            <button id="learningStartButton" type="button">Start</button>
-            <button id="learningStopButton" type="button" class="secondary-button">Stop</button>
-          </div>
-          <div id="learningRunList" class="stack-list compact-list"></div>
-        </section>
+          <span class="nav-group-label">Infrastructure</span>
+          <a class="nav-link" href="#section-tools" data-section="tools">
+            <span class="ni">⚙</span><span>Tool Runner</span>
+          </a>
+          <a class="nav-link" href="#section-vault" data-section="vault">
+            <span class="ni">⊘</span><span>Vault</span>
+          </a>
+          <a class="nav-link" href="#section-settings" data-section="settings">
+            <span class="ni">≡</span><span>Settings</span>
+          </a>
+          <a class="nav-link" href="#section-audit" data-section="audit">
+            <span class="ni">◻</span><span>Audit Log</span>
+          </a>
 
-        <section class="card">
-          <div class="card-header">
-            <div>
-              <p class="card-label">Self Debugging</p>
-              <h2>Diagnostics</h2>
-            </div>
-          </div>
-          <p class="helper-copy">
-            Runs tool registration checks, recent failure analysis, and a code-generation smoke simulation.
-          </p>
-          <div class="list-actions">
-            <button id="diagnosticsRunButton" type="button">Run Diagnostics</button>
-            <button id="diagnosticsAutoRepairButton" type="button" class="secondary-button">Auto Repair</button>
-          </div>
-          <div id="diagnosticsRunList" class="stack-list compact-list"></div>
-        </section>
+          <span class="nav-group-label">Command</span>
+          <a class="nav-link" href="#section-companion" data-section="companion">
+            <span class="ni">◇</span><span>Companion</span>
+          </a>
+          <a class="nav-link nav-emergency" href="#section-emergency" data-section="emergency">
+            <span class="ni">⊗</span><span>Emergency</span>
+          </a>
+        </nav>
 
-        <section class="card">
-          <div class="card-header">
-            <div>
-              <p class="card-label">Weight Training</p>
-              <h2>Training Lab</h2>
-            </div>
-          </div>
-          <p class="helper-copy">
-            Exports Project Q conversations, repair lessons, and routing evals into local datasets for future LoRA fine-tuning.
-          </p>
-          <div class="list-actions">
-            <button id="trainingExportButton" type="button">Export Training Assets</button>
-            <button id="trainingPrepareLoraButton" type="button" class="secondary-button">Prepare LoRA Job</button>
-          </div>
-        </section>
+        <div class="sidebar-footer">
+          <button id="refreshButton" class="secondary-button sidebar-refresh-btn">↻ Refresh All</button>
+        </div>
 
-        <section class="card">
-          <div class="card-header">
-            <div>
-              <p class="card-label">Sub-Agents</p>
-              <h2>Agent Registry</h2>
-            </div>
-          </div>
-          <form id="agentForm" class="inline-form">
-            <input id="agentName" placeholder="Agent name" />
-            <input id="agentGoal" placeholder="Goal" />
-            <button type="submit">Spawn</button>
-          </form>
-          <div id="agentList" class="stack-list"></div>
-        </section>
+      </aside>
 
-        <section class="card wide-card">
-          <div class="card-header">
-            <div>
-              <p class="card-label">Trusted Automation</p>
-              <h2>Routine Registry</h2>
-            </div>
-          </div>
-          <form id="routineForm" class="inline-form vertical">
-            <input id="routineName" placeholder="Routine name" />
-            <input id="routineGoal" placeholder="Routine goal" />
-            <textarea id="routineSteps" rows="8" placeholder="Routine steps JSON"></textarea>
-            <label class="checkbox-row">
-              <input id="routineTrusted" type="checkbox" />
-              Mark as trusted routine for tier 2 automation
-            </label>
-            <div class="form-actions">
-              <button type="submit">Save Routine</button>
-            </div>
-          </form>
-          <div id="routineList" class="stack-list"></div>
-        </section>
+      <!-- Mobile overlay -->
+      <div class="sidebar-overlay" id="sidebarOverlay"></div>
 
-        <section class="card wide-card">
-          <div class="card-header">
-            <div>
-              <p class="card-label">Execution</p>
-              <h2>Tool Runner</h2>
-            </div>
-          </div>
-          <form id="toolForm" class="tool-form">
-            <select id="toolSelect"></select>
-            <textarea id="toolPayload" rows="6">
-{}
-            </textarea>
-            <label class="checkbox-row">
-              <input id="toolApproval" type="checkbox" />
-              Treat this run as owner-approved
-            </label>
-            <div class="form-actions">
-              <button type="submit">Execute Tool</button>
-            </div>
-          </form>
-          <pre id="toolResult" class="console-output">No tool run yet.</pre>
-        </section>
+      <!-- ── Main ────────────────────────────────────────────────── -->
+      <div class="main-wrap">
 
-        <section class="card">
-          <div class="card-header">
-            <div>
-              <p class="card-label">Secrets</p>
-              <h2>Vault</h2>
-            </div>
+        <!-- Topbar -->
+        <header class="topbar">
+          <button class="menu-toggle" id="menuToggle" aria-label="Toggle navigation">☰</button>
+          <div class="topbar-left">
+            <div class="topbar-brand">PROJECT Q</div>
+            <div class="status-pill" id="statusPill">Connecting…</div>
           </div>
-          <form id="secretForm" class="inline-form vertical">
-            <input id="secretName" placeholder="Secret name" />
-            <input id="secretValue" placeholder="Secret value" type="password" />
-            <input id="secretDescription" placeholder="Description" />
-            <button type="submit">Store Secret</button>
-          </form>
-          <div id="secretList" class="stack-list"></div>
-        </section>
+          <div class="topbar-right">
+            <div class="topbar-time" id="topbarTime"></div>
+          </div>
+        </header>
 
-        <section class="card">
-          <div class="card-header">
-            <div>
-              <p class="card-label">Owner Policy</p>
-              <h2>Settings</h2>
-            </div>
-          </div>
-          <form id="settingsForm" class="inline-form vertical">
-            <input id="ownerName" placeholder="Owner name" />
-            <select id="aggressionLevel">
-              <option value="conservative">Conservative</option>
-              <option value="normal">Normal</option>
-              <option value="operator">Operator</option>
-              <option value="maximum">Maximum</option>
-            </select>
-            <label class="range-row">
-              <span>Auto-approve tier</span>
-              <input id="autoApproveTier" type="range" min="0" max="3" step="1" />
-            </label>
-            <label class="checkbox-row">
-              <input id="notificationsEnabled" type="checkbox" />
-              Notifications enabled
-            </label>
-            <label class="checkbox-row">
-              <input id="providerEnabled" type="checkbox" />
-              Enable advanced model provider
-            </label>
-            <select id="providerType">
-              <option value="ollama">Ollama (free local)</option>
-              <option value="openai_responses">OpenAI-compatible API</option>
-            </select>
-            <input id="modelName" placeholder="Primary/default model name" />
-            <label class="checkbox-row">
-              <input id="ollamaModelRoutingEnabled" type="checkbox" />
-              Enable four-model Ollama routing
-            </label>
-            <input id="ollamaGeneralModel" placeholder="General model (example: qwen3.5:9b)" />
-            <input id="ollamaCodingModel" placeholder="Coding model (example: qwen2.5-coder:7b)" />
-            <input id="ollamaReasoningModel" placeholder="Reasoning model (example: deepseek-r1:7b)" />
-            <input id="ollamaFastModel" placeholder="Fast model (example: llama3.1:8b)" />
-            <input id="modelBaseUrl" placeholder="Provider base URL" />
-            <input id="modelSecretName" placeholder="Secret name for API key" />
-            <label class="range-row">
-              <span>Provider timeout</span>
-              <input id="providerTimeoutSeconds" type="range" min="5" max="120" step="5" />
-            </label>
-            <label class="checkbox-row">
-              <input id="browserHeadless" type="checkbox" />
-              Run browser tools headless
-            </label>
-            <input id="browserChannel" placeholder="Browser channel (example: msedge)" />
-            <input id="browserExecutablePath" placeholder="Optional browser executable path" />
-            <textarea
-              id="fileAccessRoots"
-              rows="4"
-              placeholder="Owner file access roots, one per line. Example: C:\Users\umarq.APEX"
-            ></textarea>
-            <label class="range-row">
-              <span>Learning interval seconds</span>
-              <input id="learningIntervalSeconds" type="number" min="10" max="86400" step="10" />
-            </label>
-            <label class="range-row">
-              <span>Learning max cycles per start</span>
-              <input id="learningMaxCyclesPerStart" type="number" min="1" max="1000" step="1" />
-            </label>
-            <div class="model-browser">
-              <div class="form-actions">
-                <button id="refreshModelsButton" type="button" class="secondary-button">Refresh Local Models</button>
+        <!-- Page -->
+        <main class="page">
+
+          <!-- Hero -->
+          <div class="page-hero">
+            <div class="hero-inner">
+              <div class="hero-left">
+                <p class="eyebrow">Private Executive Agent</p>
+                <h1 class="hero-title">Project Q</h1>
+                <p class="hero-copy">
+                  Windows-first local runtime for orchestration, memory,
+                  agents, audit, and secure execution.
+                </p>
+                <div class="hero-stats">
+                  <div class="hero-stat">
+                    <span class="stat-value" id="statTools">—</span>
+                    <span class="stat-label">Tools</span>
+                  </div>
+                  <div class="hero-stat">
+                    <span class="stat-value" id="statMemories">—</span>
+                    <span class="stat-label">Memories</span>
+                  </div>
+                  <div class="hero-stat">
+                    <span class="stat-value" id="statTasks">—</span>
+                    <span class="stat-label">Open Tasks</span>
+                  </div>
+                  <div class="hero-stat">
+                    <span class="stat-value" id="statAgents">—</span>
+                    <span class="stat-label">Active Agents</span>
+                  </div>
+                </div>
               </div>
-              <div id="providerModelStatus" class="helper-copy">Built-in heuristic mode works with provider disabled.</div>
-              <div id="providerModelList" class="stack-list compact-list"></div>
-            </div>
-            <div class="form-actions">
-              <button type="submit">Save Settings</button>
-            </div>
-          </form>
-        </section>
-
-        <section class="card wide-card">
-          <div class="card-header">
-            <div>
-              <p class="card-label">Auditability</p>
-              <h2>Audit Log</h2>
+              <div class="hero-right">
+                <div class="hero-arc">
+                  <div class="arc-ring arc-1"></div>
+                  <div class="arc-ring arc-2"></div>
+                  <div class="arc-ring arc-3"></div>
+                  <div class="arc-core">
+                    <span>AI</span>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
-          <div id="auditList" class="stack-list"></div>
-        </section>
-      </main>
-    </div>
+
+          <!-- Sections -->
+          <div class="section-grid">
+
+            <!-- ── Operator Console ── full -->
+            <section class="card full-card chat-card" id="section-chat" data-nav-id="chat">
+              <div class="card-header">
+                <div>
+                  <p class="card-label">Conversation</p>
+                  <h2>Operator Console</h2>
+                </div>
+                <div class="card-header-badge">
+                  <div class="live-dot"></div>
+                  <span>LIVE</span>
+                </div>
+              </div>
+              <div id="conversationFeed" class="conversation-feed"></div>
+              <form id="chatForm" class="chat-form">
+                <div class="chat-input-wrapper">
+                  <div class="chat-ai-indicator">
+                    <div class="ai-orb">
+                      <div class="ai-orb-ring"></div>
+                      <span>Q</span>
+                    </div>
+                  </div>
+                  <textarea
+                    id="chatInput"
+                    placeholder="Command, query, or task for Project Q… (Ctrl+Enter to send)"
+                    rows="3"
+                  ></textarea>
+                  <div class="chat-form-footer">
+                    <label class="checkbox-row">
+                      <input id="chatApproval" type="checkbox" />
+                      Authorize higher-tier actions
+                    </label>
+                    <div class="chat-btns">
+                      <button type="button" id="voiceButton" class="voice-btn" title="Start or stop streaming voice input" aria-label="Start or stop voice input" aria-pressed="false">Mic</button>
+                      <button type="submit" class="chat-send-btn">Send ↵</button>
+                    </div>
+                  </div>
+                </div>
+              </form>
+            </section>
+
+            <!-- ── Tasks ── half -->
+            <section class="card" id="section-tasks" data-nav-id="tasks">
+              <div class="card-header">
+                <div>
+                  <p class="card-label">Work Queue</p>
+                  <h2>Task Queue</h2>
+                </div>
+              </div>
+              <form id="taskForm" class="inline-form">
+                <input id="taskTitle" placeholder="Enter task title…" />
+                <select id="taskPriority" class="kind-select">
+                  <option value="2">P2 Normal</option>
+                  <option value="1">P1 High</option>
+                  <option value="0">P0 Critical</option>
+                  <option value="3">P3 Low</option>
+                </select>
+                <button type="submit">Add</button>
+              </form>
+              <div id="taskList" class="stack-list"></div>
+            </section>
+
+            <!-- ── Memory ── half -->
+            <section class="card" id="section-memory" data-nav-id="memory">
+              <div class="card-header">
+                <div>
+                  <p class="card-label">Long-Term State</p>
+                  <h2>Memory Core</h2>
+                </div>
+                <div class="card-header-actions">
+                  <button type="button" id="memoryExportButton" class="secondary-button btn-sm">↓ Export</button>
+                  <button type="button" id="memoryImportButton" class="secondary-button btn-sm">↑ Import</button>
+                  <button type="button" id="memoryPruneButton" class="secondary-button btn-sm">⌛ Prune</button>
+                  <button type="button" id="memoryBulkDeleteButton" class="danger-btn-mini btn-sm">✕ All</button>
+                  <input type="file" id="memoryImportInput" accept=".json" style="display:none" />
+                </div>
+              </div>
+              <div class="search-action-row">
+                <input id="memorySearch" placeholder="Search memories…" class="search-input" />
+              </div>
+              <form id="memoryForm" class="inline-form">
+                <input id="memoryText" placeholder="Store a preference, fact, or lesson…" />
+                <select id="memoryKind" class="kind-select">
+                  <option value="semantic">Semantic</option>
+                  <option value="episodic">Episodic</option>
+                  <option value="procedural">Procedural</option>
+                </select>
+                <button type="submit">Store</button>
+              </form>
+              <div id="memoryList" class="stack-list"></div>
+            </section>
+
+            <!-- ── Agents ── half -->
+            <section class="card" id="section-agents" data-nav-id="agents">
+              <div class="card-header">
+                <div>
+                  <p class="card-label">Sub-Agents</p>
+                  <h2>Agent Registry</h2>
+                </div>
+              </div>
+              <form id="agentForm" class="inline-form agent-form-grid">
+                <input id="agentName" placeholder="Agent name" />
+                <select id="agentType">
+                  <option value="general">General</option>
+                  <option value="research">Research</option>
+                  <option value="coding">Coding</option>
+                  <option value="testing">Testing</option>
+                  <option value="web_builder">Web Builder</option>
+                  <option value="monitor">Monitor</option>
+                  <option value="writer">Writer</option>
+                  <option value="data">Data</option>
+                  <option value="ops">Ops</option>
+                </select>
+                <input id="agentTimeBudget" type="number" min="1" max="1440" value="30" placeholder="Budget (min)" class="budget-input" />
+                <input id="agentGoal" placeholder="Mission goal or task description" class="agent-goal-input" />
+                <button type="submit">Spawn</button>
+              </form>
+              <div id="agentList" class="stack-list"></div>
+            </section>
+
+            <!-- ── Agent Templates ── half -->
+            <section class="card" id="section-templates" data-nav-id="templates">
+              <div class="card-header">
+                <div>
+                  <p class="card-label">Pre-built Agents</p>
+                  <h2>Agent Templates</h2>
+                </div>
+              </div>
+              <p class="helper-copy">Spawn a pre-configured agent with a single click. Optionally override the goal before spawning.</p>
+              <div id="templateList" class="template-grid"></div>
+            </section>
+
+            <section class="card full-card" id="section-workflows" data-nav-id="workflows">
+              <div class="card-header">
+                <div>
+                  <p class="card-label">Agent Orchestration</p>
+                  <h2>Workflows</h2>
+                </div>
+                <button type="button" id="workflowRefreshButton" class="secondary-button btn-sm">Refresh</button>
+              </div>
+              <div class="workflow-layout">
+                <form id="workflowForm" class="workflow-editor">
+                  <label class="field-label">
+                    <span>Name</span>
+                    <input id="workflowName" maxlength="200" placeholder="Release verification" required />
+                  </label>
+                  <label class="field-label">
+                    <span>Description</span>
+                    <input id="workflowDescription" maxlength="4000" placeholder="Coordinate coding, testing, and final checks" />
+                  </label>
+                  <label class="field-label">
+                    <span>Parallel workers</span>
+                    <input id="workflowParallelism" type="number" min="1" max="8" value="2" required />
+                  </label>
+                  <label class="field-label">
+                    <span>Nodes</span>
+                    <textarea id="workflowNodes" rows="15" spellcheck="false" aria-describedby="workflowNodeHelp"></textarea>
+                  </label>
+                  <p id="workflowNodeHelp" class="helper-copy">
+                    Each node uses kind agent, tool, or delay with optional dependencies.
+                  </p>
+                  <label class="checkbox-row">
+                    <input id="workflowOwnerApproved" type="checkbox" />
+                    Owner-approve workflow runs from this panel
+                  </label>
+                  <div class="form-actions">
+                    <button type="submit">Save Workflow</button>
+                    <button type="button" id="workflowResetButton" class="secondary-button">Reset</button>
+                  </div>
+                </form>
+                <div class="workflow-board">
+                  <div>
+                    <h3 class="workflow-subhead">Definitions</h3>
+                    <div id="workflowList" class="stack-list workflow-definition-list"></div>
+                  </div>
+                  <div>
+                    <h3 class="workflow-subhead">Recent Runs</h3>
+                    <div id="workflowRunList" class="workflow-run-grid"></div>
+                  </div>
+                  <div id="workflowRunDetail" class="workflow-run-detail" aria-live="polite">
+                    Select a run to inspect node results and events.
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- ── Dispatches ── half -->
+            <section class="card" id="section-dispatches" data-nav-id="dispatches">
+              <div class="card-header">
+                <div>
+                  <p class="card-label">Build Operations</p>
+                  <h2>Dispatches</h2>
+                </div>
+              </div>
+              <p class="helper-copy">
+                App, website, API, script, and repair requests with acceptance criteria and artifacts.
+              </p>
+              <div id="dispatchList" class="stack-list compact-list"></div>
+            </section>
+
+            <!-- ── Routines ── full -->
+
+            <section class="card full-card" id="section-routines" data-nav-id="routines">
+              <div class="card-header">
+                <div>
+                  <p class="card-label">Trusted Automation</p>
+                  <h2>Routine Registry</h2>
+                </div>
+              </div>
+              <div class="split-layout">
+                <form id="routineForm" class="inline-form vertical">
+                  <input id="routineName" placeholder="Routine name" />
+                  <input id="routineGoal" placeholder="Routine goal" />
+                  <select id="routineTriggerType">
+                    <option value="manual">Manual trigger</option>
+                    <option value="schedule">Scheduled</option>
+                    <option value="event">On event</option>
+                    <option value="condition">On condition</option>
+                  </select>
+                  <textarea id="routineSteps" rows="8" placeholder="Routine steps JSON"></textarea>
+                  <label class="checkbox-row">
+                    <input id="routineTrusted" type="checkbox" />
+                    Mark as trusted for tier 2 automation
+                  </label>
+                  <div class="form-actions">
+                    <button type="submit">Save Routine</button>
+                  </div>
+                </form>
+                <div id="routineList" class="stack-list split-list"></div>
+              </div>
+            </section>
+
+            <!-- ── Metrics ── half -->
+            <section class="card" id="section-metrics" data-nav-id="metrics">
+              <div class="card-header">
+                <div>
+                  <p class="card-label">Performance</p>
+                  <h2>Metrics</h2>
+                </div>
+                <button type="button" id="refreshMetricsButton" class="secondary-button btn-sm">↻</button>
+              </div>
+              <div class="metrics-grid" id="metricsGrid">
+                <div class="metric-card">
+                  <span class="metric-value" id="metricTaskRate">—</span>
+                  <span class="metric-label">Task Completion Rate</span>
+                </div>
+                <div class="metric-card">
+                  <span class="metric-value" id="metricToolExec">—</span>
+                  <span class="metric-label">Tool Executions (24h)</span>
+                </div>
+                <div class="metric-card">
+                  <span class="metric-value" id="metricToolFailRate">—</span>
+                  <span class="metric-label">Tool Failure Rate</span>
+                </div>
+                <div class="metric-card">
+                  <span class="metric-value" id="metricAgentSuccessRate">—</span>
+                  <span class="metric-label">Agent Success Rate</span>
+                </div>
+              </div>
+              <h3 class="subhead" style="margin-top:16px;font-size:0.8rem;color:var(--muted)">TOP TOOLS (24H)</h3>
+              <div id="topToolsList" class="stack-list compact-list"></div>
+            </section>
+
+            <!-- ── Learning Lab ── half -->
+            <section class="card" id="section-learning" data-nav-id="learning">
+              <div class="card-header">
+                <div>
+                  <p class="card-label">Idle Intelligence</p>
+                  <h2>Learning Lab</h2>
+                </div>
+              </div>
+              <p id="learningStatusText" class="helper-copy">Learning Lab status loading…</p>
+              <div class="list-actions">
+                <button id="learningRunOnceButton" type="button" class="secondary-button">Run Once</button>
+                <button id="learningStartButton" type="button">Start</button>
+                <button id="learningStopButton" type="button" class="secondary-button">Stop</button>
+              </div>
+              <div id="learningRunList" class="stack-list compact-list"></div>
+            </section>
+
+            <!-- ── Diagnostics ── half -->
+            <section class="card" id="section-diagnostics" data-nav-id="diagnostics">
+              <div class="card-header">
+                <div>
+                  <p class="card-label">Self Debugging</p>
+                  <h2>Diagnostics</h2>
+                </div>
+              </div>
+              <p class="helper-copy">Tool registration checks, failure analysis, and smoke simulation.</p>
+              <div class="list-actions">
+                <button id="diagnosticsRunButton" type="button">Run Diagnostics</button>
+                <button id="diagnosticsAutoRepairButton" type="button" class="secondary-button">Auto Repair</button>
+              </div>
+              <div id="diagnosticsRunList" class="stack-list compact-list"></div>
+            </section>
+
+            <!-- ── Training Lab ── half -->
+            <section class="card" id="section-training" data-nav-id="training">
+              <div class="card-header">
+                <div>
+                  <p class="card-label">Weight Training</p>
+                  <h2>Training Lab</h2>
+                </div>
+              </div>
+              <p class="helper-copy">
+                Export conversations and repair lessons into local datasets for LoRA fine-tuning.
+              </p>
+              <div class="list-actions">
+                <button id="trainingExportButton" type="button">Export Training Assets</button>
+                <button id="trainingPrepareLoraButton" type="button" class="secondary-button">Prepare LoRA Job</button>
+              </div>
+              <div id="trainingJobList" class="stack-list compact-list training-job-list" aria-live="polite"></div>
+              <pre id="trainingJobDetail" class="result-box training-job-detail">Select Audit on a job to inspect artifacts, training progress, and prompt leakage.</pre>
+            </section>
+
+            <!-- ── Vault ── half -->
+            <section class="card" id="section-vault" data-nav-id="vault">
+              <div class="card-header">
+                <div>
+                  <p class="card-label">Secrets</p>
+                  <h2>Vault</h2>
+                </div>
+              </div>
+              <form id="secretForm" class="inline-form vertical">
+                <input id="secretName" placeholder="Secret name" />
+                <input id="secretValue" placeholder="Secret value" type="password" />
+                <input id="secretDescription" placeholder="Description" />
+                <button type="submit">Store Secret</button>
+              </form>
+              <div id="secretList" class="stack-list compact-list"></div>
+            </section>
+
+            <!-- ── Tool Runner ── full -->
+            <section class="card full-card" id="section-tools" data-nav-id="tools">
+              <div class="card-header">
+                <div>
+                  <p class="card-label">Execution</p>
+                  <h2>Tool Runner</h2>
+                </div>
+              </div>
+              <div class="split-layout">
+                <form id="toolForm" class="tool-form">
+                  <select id="toolSelect"></select>
+                  <textarea id="toolPayload" rows="9">{}</textarea>
+                  <label class="checkbox-row">
+                    <input id="toolApproval" type="checkbox" />
+                    Treat this run as owner-approved
+                  </label>
+                  <div class="form-actions">
+                    <button type="submit">Execute Tool</button>
+                  </div>
+                </form>
+                <pre id="toolResult" class="console-output split-output">No tool run yet.</pre>
+              </div>
+            </section>
+
+            <!-- ── Companion ── half -->
+            <section class="card" id="section-companion" data-nav-id="companion">
+              <div class="card-header">
+                <div>
+                  <p class="card-label">Companion</p>
+                  <h2>Device Pairing</h2>
+                </div>
+              </div>
+              <form id="pairingForm" class="inline-form vertical">
+                <input id="pairingDeviceName" placeholder="Device name (e.g. iPhone)" />
+                <button type="submit">Start Pairing</button>
+              </form>
+              <div id="pairingQrPanel" class="pairing-qr-panel" hidden>
+                <img id="pairingQrImage" class="pairing-qr-image" alt="Project Q companion pairing QR code" hidden />
+                <button id="pairingCopyButton" type="button" class="secondary-button">
+                  Copy Pairing Link
+                </button>
+              </div>
+              <pre id="pairingResult" class="console-output console-sm">No active pairing session.</pre>
+              <div id="companionDeviceList" class="stack-list compact-list"></div>
+            </section>
+
+            <!-- ── Settings ── full -->
+            <section class="card full-card" id="section-settings" data-nav-id="settings">
+              <div class="card-header">
+                <div>
+                  <p class="card-label">Owner Policy</p>
+                  <h2>Settings</h2>
+                </div>
+              </div>
+              <form id="settingsForm" class="settings-form">
+
+                <details class="settings-group" open>
+                  <summary class="settings-group-title">Owner &amp; Policy</summary>
+                  <div class="settings-group-body two-col-fields">
+                    <label class="field-label">
+                      <span>Owner name</span>
+                      <input id="ownerName" placeholder="Your name" />
+                    </label>
+                    <label class="field-label">
+                      <span>Aggression level</span>
+                      <select id="aggressionLevel">
+                        <option value="conservative">Conservative</option>
+                        <option value="normal">Normal</option>
+                        <option value="operator">Operator</option>
+                        <option value="maximum">Maximum</option>
+                      </select>
+                    </label>
+                    <label class="range-row span-2">
+                      <span>Auto-approve tier</span>
+                      <input id="autoApproveTier" type="range" min="0" max="3" step="1" />
+                    </label>
+                    <label class="checkbox-row">
+                      <input id="notificationsEnabled" type="checkbox" />
+                      Notifications enabled
+                    </label>
+                    <label class="checkbox-row">
+                      <input id="voiceEnabled" type="checkbox" />
+                      Voice input &amp; speech output
+                    </label>
+                  </div>
+                </details>
+
+                <details class="settings-group">
+                  <summary class="settings-group-title">Behavior Profiles</summary>
+                  <div class="settings-group-body two-col-fields">
+                    <label class="field-label">
+                      <span>Memory depth</span>
+                      <select id="memoryMode">
+                        <option value="ephemeral">Ephemeral (session only)</option>
+                        <option value="standard">Standard (90-day raw)</option>
+                        <option value="aggressive">Aggressive Learning</option>
+                      </select>
+                    </label>
+                    <label class="field-label">
+                      <span>Proactive mode</span>
+                      <select id="proactiveMode">
+                        <option value="off">Off</option>
+                        <option value="gentle">Gentle</option>
+                        <option value="active">Active</option>
+                        <option value="aggressive">Aggressive</option>
+                      </select>
+                    </label>
+                    <label class="field-label">
+                      <span>Screen context</span>
+                      <select id="screenContext">
+                        <option value="off">Off</option>
+                        <option value="manual">Manual Grant</option>
+                        <option value="auto_trusted">Auto for Trusted Apps</option>
+                      </select>
+                    </label>
+                    <label class="field-label">
+                      <span>Network policy</span>
+                      <select id="networkPolicy">
+                        <option value="local_only">Local Only</option>
+                        <option value="selected_services">Selected Services</option>
+                        <option value="open_web">Open Web</option>
+                      </select>
+                    </label>
+                    <label class="field-label">
+                      <span>Approval Policy</span>
+                      <select id="approvalPolicy">
+                        <option value="always_ask">Always Ask</option>
+                        <option value="ask_on_risky">Ask on Risky</option>
+                        <option value="trusted_routines_only">Trusted Routines Only</option>
+                      </select>
+                    </label>
+                    <label class="field-label">
+                      <span>Voice Mode</span>
+                      <select id="voiceMode">
+                        <option value="always_on">Always On</option>
+                        <option value="push_to_talk">Push-to-Talk</option>
+                        <option value="text_only">Text Only</option>
+                      </select>
+                    </label>
+                    <label class="field-label span-2">
+                      <span>Execution environment</span>
+                      <select id="executionEnvironment">
+                        <option value="sandbox_first">Sandbox First (recommended)</option>
+                        <option value="direct_trusted">Direct for Trusted Tools</option>
+                      </select>
+                    </label>
+                  </div>
+                </details>
+
+                <details class="settings-group">
+                  <summary class="settings-group-title">AI Provider</summary>
+                  <div class="settings-group-body two-col-fields">
+                    <label class="checkbox-row span-2">
+                      <input id="providerEnabled" type="checkbox" />
+                      Enable advanced model provider
+                    </label>
+                    <label class="field-label">
+                      <span>Provider type</span>
+                      <select id="providerType">
+                        <option value="ollama">Ollama (free local)</option>
+                        <option value="openai_responses">OpenAI-compatible API</option>
+                        <option value="anthropic_messages">Anthropic Messages API</option>
+                      </select>
+                    </label>
+                    <label class="field-label">
+                      <span>Primary model name</span>
+                      <input id="modelName" placeholder="example: qwen2.5:7b" />
+                    </label>
+                    <label class="field-label">
+                      <span>Provider base URL</span>
+                      <input id="modelBaseUrl" placeholder="http://localhost:11434" />
+                    </label>
+                    <label class="field-label">
+                      <span>API key secret name</span>
+                      <input id="modelSecretName" placeholder="Vault secret name" />
+                    </label>
+                    <label class="range-row span-2">
+                      <span>Provider timeout (seconds)</span>
+                      <input id="providerTimeoutSeconds" type="range" min="5" max="120" step="5" />
+                    </label>
+                  </div>
+                </details>
+
+                <details class="settings-group">
+                  <summary class="settings-group-title">Ollama Model Routing</summary>
+                  <div class="settings-group-body two-col-fields">
+                    <label class="checkbox-row span-2">
+                      <input id="ollamaModelRoutingEnabled" type="checkbox" />
+                      Enable four-model Ollama routing
+                    </label>
+                    <label class="field-label">
+                      <span>General model</span>
+                      <input id="ollamaGeneralModel" placeholder="qwen2.5:9b" />
+                    </label>
+                    <label class="field-label">
+                      <span>Coding model</span>
+                      <input id="ollamaCodingModel" placeholder="qwen2.5-coder:7b" />
+                    </label>
+                    <label class="field-label">
+                      <span>Reasoning model</span>
+                      <input id="ollamaReasoningModel" placeholder="deepseek-r1:7b" />
+                    </label>
+                    <label class="field-label">
+                      <span>Fast model</span>
+                      <input id="ollamaFastModel" placeholder="llama3.2:3b" />
+                    </label>
+                    <div class="span-2">
+                      <div id="providerModelStatus" class="helper-copy"></div>
+                      <div id="providerModelList" class="stack-list compact-list"></div>
+                      <div class="form-actions" style="margin-top:10px">
+                        <button id="refreshModelsButton" type="button" class="secondary-button">↻ Refresh Local Models</button>
+                      </div>
+                    </div>
+                  </div>
+                </details>
+
+                <details class="settings-group">
+                  <summary class="settings-group-title">Integrations</summary>
+                  <div class="settings-group-body two-col-fields">
+                    <label class="checkbox-row span-2">
+                      <input id="outlookEnabled" type="checkbox" />
+                      Enable Outlook email &amp; calendar access
+                    </label>
+                    <label class="checkbox-row span-2">
+                      <input id="schedulerEnabled" type="checkbox" />
+                      Enable routine scheduler (auto-run scheduled routines)
+                    </label>
+                    <label class="checkbox-row span-2">
+                      <input id="autoReflectOnTasks" type="checkbox" />
+                      Auto-reflect on completed tasks (creates memory lessons)
+                    </label>
+                    <label class="field-label">
+                      <span>Memory retention (days, 0=forever)</span>
+                      <input id="memoryRetentionDays" type="number" min="0" max="3650" step="1" value="90" />
+                    </label>
+                    <label class="field-label">
+                      <span>Git workspace path</span>
+                      <input id="gitWorkspace" placeholder="C:\Users\...\projects" />
+                    </label>
+                  </div>
+                </details>
+
+                <details class="settings-group">
+                  <summary class="settings-group-title">Browser</summary>
+                  <div class="settings-group-body two-col-fields">
+                    <label class="checkbox-row span-2">
+                      <input id="browserHeadless" type="checkbox" />
+                      Hide controlled browser action windows
+                    </label>
+                    <label class="field-label">
+                      <span>Browser channel</span>
+                      <input id="browserChannel" placeholder="msedge" />
+                    </label>
+                    <label class="field-label">
+                      <span>Executable path (optional)</span>
+                      <input id="browserExecutablePath" placeholder="C:\Path\to\browser.exe" />
+                    </label>
+                  </div>
+                </details>
+
+                <details class="settings-group">
+                  <summary class="settings-group-title">Files &amp; Learning</summary>
+                  <div class="settings-group-body">
+                    <label class="field-label">
+                      <span>File access roots (one per line)</span>
+                      <textarea id="fileAccessRoots" rows="4" placeholder="C:\Users\umarq.APEX"></textarea>
+                    </label>
+                    <div class="two-col-fields" style="margin-top:12px">
+                      <label class="range-row">
+                        <span>Learning interval (s)</span>
+                        <input id="learningIntervalSeconds" type="number" min="10" max="86400" step="10" />
+                      </label>
+                      <label class="range-row">
+                        <span>Max cycles per start</span>
+                        <input id="learningMaxCyclesPerStart" type="number" min="1" max="1000" step="1" />
+                      </label>
+                    </div>
+                  </div>
+                </details>
+
+                <div class="form-actions settings-save-row">
+                  <button type="submit">Save Settings</button>
+                </div>
+
+              </form>
+            </section>
+
+            <!-- ── Audit Log ── full -->
+            <section class="card full-card" id="section-audit" data-nav-id="audit">
+              <div class="card-header">
+                <div>
+                  <p class="card-label">Auditability</p>
+                  <h2>Audit Log</h2>
+                </div>
+              </div>
+              <div id="auditList" class="stack-list audit-list"></div>
+            </section>
+
+            <!-- ── Emergency ── full -->
+            <section class="card full-card emergency-card" id="section-emergency" data-nav-id="emergency">
+              <div class="card-header">
+                <div>
+                  <p class="card-label">Emergency</p>
+                  <h2>Control Plane</h2>
+                </div>
+                <div class="emergency-indicator" id="emergencyIndicator" style="display:none">
+                  <span class="blink-dot"></span> ACTIVE
+                </div>
+              </div>
+              <p id="controlStatusText" class="helper-copy">Control plane loading…</p>
+              <div class="list-actions">
+                <button id="killSwitchButton" type="button" class="danger-button">⚠ Kill Switch</button>
+                <button id="resumeButton" type="button" class="secondary-button">↩ Resume Operations</button>
+              </div>
+            </section>
+
+          </div><!-- /section-grid -->
+        </main>
+      </div><!-- /main-wrap -->
+    </div><!-- /app-shell -->
+
+    <!-- Toast stack -->
+    <div class="toast-stack" id="toastStack" aria-live="polite"></div>
 
     <script src="/app.js" defer></script>
   </body>

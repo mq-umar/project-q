@@ -1012,7 +1012,7 @@ Open `index.html` in a browser.
 
     @staticmethod
     def _escape_js(value: str) -> str:
-        return value.replace("\\", "\\\\").replace('"', '\\"')
+        return json.dumps(value, ensure_ascii=True)[1:-1]
 
     @staticmethod
     def _js_array(items: list[dict[str, str]]) -> str:
@@ -1440,8 +1440,8 @@ def test_scan_todos_finds_todo(tmp_path: Path):
 
     @staticmethod
     def _escape_py(value: str) -> str:
-        return value.replace("\\", "\\\\").replace('"', '\\"')
+        return json.dumps(value, ensure_ascii=True)[1:-1]
 
     @staticmethod
     def _escape_js(value: str) -> str:
-        return value.replace("\\", "\\\\").replace('"', '\\"')
+        return json.dumps(value, ensure_ascii=True)[1:-1]

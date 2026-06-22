@@ -13,18 +13,36 @@ CORE_TOOL_IDS = {
     "diagnostics.run_self_check",
     "filesystem.allowed_roots",
     "filesystem.list_directory",
+    "filesystem.move_path",
     "filesystem.read_file",
     "filesystem.search_files",
+    "filesystem.watch_poll",
+    "filesystem.watch_start",
     "filesystem.write_file",
+    "filesystem.create_zip",
     "knowledge.answer",
     "code.generate_website",
     "code.generate_project",
+    "calendar.create_invite",
+    "communications.email_draft",
     "project.plan_build",
+    "security.scan_external_content",
     "shell.run_command",
     "training.capability_plan",
     "training.export_dataset",
     "training.prepare_lora_job",
+    "voice.listen_once",
+    "voice.speak",
+    "windows.app_state",
+    "windows.focus_follow",
+    "windows.inspect_ui_tree",
+    "windows.invoke_ui_element",
+    "windows.notify",
+    "windows.ocr_screenshot",
     "windows.open_url",
+    "windows.registry_read",
+    "windows.registry_write",
+    "windows.screenshot_diff",
 }
 
 
@@ -41,6 +59,8 @@ class SelfDiagnosticsService:
         workspace_root: Path,
         data_root: Path,
         self_repair_service=None,
+        trust_service=None,
+        policy_service=None,
     ) -> None:
         self.db = db
         self.memory_service = memory_service
@@ -52,6 +72,8 @@ class SelfDiagnosticsService:
         self.workspace_root = workspace_root
         self.data_root = data_root
         self.self_repair_service = self_repair_service
+        self.trust_service = trust_service
+        self.policy_service = policy_service
 
     def run(self, source: str = "manual", auto_repair: bool = True) -> dict[str, Any]:
         run_id = self.db.make_id("diag")
@@ -59,6 +81,7 @@ class SelfDiagnosticsService:
         checks = [
             self._check_tool_registry(),
             self._check_recent_failures(),
+            self._check_prompt_injection_red_team(),
             self._check_code_generation_probe(run_id),
         ]
         findings = self._findings_from_checks(checks)
@@ -181,6 +204,19 @@ class SelfDiagnosticsService:
             ],
         }
 
+    def _check_prompt_injection_red_team(self) -> dict[str, Any]:
+        if self.trust_service is None or self.policy_service is None:
+            return {
+                "name": "prompt_injection_red_team",
+                "status": "failed",
+                "summary": "Prompt-injection red-team simulation is not configured.",
+                "sample_count": 0,
+                "suspicious_samples": 0,
+                "blocked_external_authorizations": 0,
+                "cases": [],
+            }
+        return self.trust_service.run_prompt_injection_simulation(self.policy_service)
+
     @staticmethod
     def _is_transient_http_disconnect(entry: dict[str, Any]) -> bool:
         text = f"{entry.get('error', '')} {entry.get('metadata', '')}".lower()
@@ -254,6 +290,15 @@ class SelfDiagnosticsService:
                         "severity": "high",
                         "message": check["summary"],
                         "task_title": "Repair Project Q code-generation validation loop",
+                    }
+                )
+            if check["name"] == "prompt_injection_red_team" and check["status"] == "failed":
+                findings.append(
+                    {
+                        "kind": "prompt_injection_red_team_failed",
+                        "severity": "high",
+                        "message": check["summary"],
+                        "task_title": "Repair Project Q prompt-injection defenses",
                     }
                 )
         return findings
