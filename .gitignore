@@ -30,3 +30,8 @@ third_party/
 *.pth
 *.onnx
 coverage/
+.tmp_*
+tests/.tmp/
+.browser_engine_qa/
+.browser_engine_qa*/
+docs/_PRD_extracted.txt

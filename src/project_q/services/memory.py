@@ -270,7 +270,9 @@ class MemoryService:
             return {"pruned": 0, "retention_days": retention_days, "skipped": "disabled"}
         from datetime import UTC, datetime, timedelta
         cutoff_dt = datetime.now(UTC) - timedelta(days=retention_days)
-        cutoff_str = cutoff_dt.strftime("%Y-%m-%dT%H:%M:%S")
+        # Match utc_now()'s 'Z'-suffixed format so the string comparison against
+        # created_at is apples-to-apples (otherwise the suffix skews equality).
+        cutoff_str = cutoff_dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
         with self.db.connection() as conn:
             result = conn.execute(
                 "DELETE FROM memories WHERE created_at < ? AND owner_confirmed = 0",

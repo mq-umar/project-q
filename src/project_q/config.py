@@ -15,6 +15,7 @@ class AppConfig:
     port: int = 8787
     relay_base_url: str = ""
     relay_bootstrap_token: str = ""
+    worker_mode: bool = False
 
     @classmethod
     def discover(cls, workspace_root: Path | None = None) -> "AppConfig":
@@ -40,4 +41,6 @@ class AppConfig:
                 "PROJECT_Q_RELAY_BOOTSTRAP_TOKEN",
                 "",
             ).strip(),
+            worker_mode=os.environ.get("PROJECT_Q_WORKER_MODE", "").strip().lower()
+            in {"1", "true", "yes", "on"},
         )

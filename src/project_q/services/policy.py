@@ -50,10 +50,21 @@ class PolicyService:
             return PolicyDecision(False, "external content cannot authorize tool execution")
         if owner_approved and not self._has_owner_authority(sources):
             return PolicyDecision(False, "external content cannot authorize owner approval")
-        auto_approve_tier = int(settings.get("auto_approve_tier", 1))
+        # Tier 3 (destructive / high-risk) is NEVER auto-approved or trusted-routine
+        # approved — it always requires an explicit, owner-authoritative approval.
+        if tier >= 3:
+            if owner_approved:
+                return PolicyDecision(True, "allowed by explicit owner approval")
+            # Keep this exact reason string: the approval-request flow in
+            # PlanExecutorService matches on `tier {tier} requires owner approval`.
+            return PolicyDecision(False, f"tier {tier} requires owner approval")
+        # Effective auto-approval bar folds the §12.1 Approval Policy and Aggression
+        # Level profiles on top of auto_approve_tier (always clamped to <= 2).
+        approval_policy = str(settings.get("approval_policy", "ask_on_risky"))
+        auto_approve_tier = self._effective_auto_approve_tier(settings, approval_policy)
         if tier <= auto_approve_tier:
             return PolicyDecision(True, "allowed by owner auto-approval tier")
-        if trusted_routine and tier <= 2:
+        if trusted_routine and tier <= 2 and approval_policy != "always_ask":
             return PolicyDecision(True, "allowed by trusted routine policy")
         if owner_approved:
             return PolicyDecision(True, "allowed by explicit owner approval")
@@ -85,3 +96,22 @@ class PolicyService:
     def _has_owner_authority(sources: set[str]) -> bool:
         owner_markers = {"owner", "owner_session", "dashboard", "trusted_routine"}
         return bool(sources & owner_markers)
+
+    @staticmethod
+    def _effective_auto_approve_tier(settings, approval_policy: str) -> int:
+        """Fold §12.1 Approval Policy + Aggression Level into the auto-approval bar.
+
+        Defaults (operator + ask_on_risky) leave the configured auto_approve_tier
+        unchanged so existing behavior is preserved.
+        """
+        base = min(int(settings.get("auto_approve_tier", 1)), 2)
+        if approval_policy in {"always_ask", "trusted_routines_only"}:
+            base = min(base, 0)
+        aggression = str(settings.get("aggression_level", "operator"))
+        if aggression == "conservative":
+            base = min(base, 0)
+        elif aggression == "balanced":
+            base = min(base, 1)
+        elif aggression == "maximum":
+            base = max(base, 2)
+        return max(0, min(base, 2))

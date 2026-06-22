@@ -1,0 +1,12 @@
+{"expected_tool":"filesystem.resolve_file_request","input":"Locate the newest quarterly budget workbook in my documents."}
+{"expected_tool":"filesystem.open_file_choice","input":"Open the second result from that document search."}
+{"expected_tool":"spreadsheet.analyze","input":"Compare mean order value by region in orders.xlsx."}
+{"expected_tool":"spreadsheet.write_analysis","input":"Write a new Summary tab with regional totals in orders.xlsx."}
+{"expected_tool":"code.generate_website","input":"Build a polished multi-page website for Northstar Dental with appointments."}
+{"expected_tool":"code.generate_project","input":"Generate a Python CLI that renames photos by capture date."}
+{"expected_tool":"browser.complete_goal","input":"Research three reliable guides for installing a monitor arm and open the best one."}
+{"expected_tool":"windows.open_url","input":"Open https://docs.python.org in my browser."}
+{"expected_tool":"training.prepare_lora_job","input":"Prepare a local LoRA training package but do not start training."}
+{"expected_tool":"training.capability_plan","input":"Outline the milestones needed for Project Q to reach stronger coding quality."}
+{"expected_tool":"diagnostics.run_self_check","input":"Run Project Q's health checks and identify failures."}
+{"expected_tool":"knowledge.answer","input":"Explain how photosynthesis stores solar energy."}

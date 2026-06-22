@@ -2,6 +2,8 @@
 (function initBgCanvas() {
   const canvas = document.getElementById('bgCanvas');
   if (!canvas) return;
+  const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduce) return;
   const ctx = canvas.getContext('2d');
   let W, H, particles;
 
@@ -76,6 +78,10 @@ function showToast(message, type = 'info') {
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;
   toast.textContent = message;
+  if (type === 'error') {
+    toast.setAttribute('role', 'alert');
+    toast.setAttribute('aria-live', 'assertive');
+  }
   container.appendChild(toast);
   requestAnimationFrame(() => requestAnimationFrame(() => toast.classList.add('toast-show')));
   setTimeout(() => {
@@ -159,6 +165,10 @@ const state = {
   tasks: [],
   memories: [],
   agents: [],
+  workflows: [],
+  workflowRuns: [],
+  selectedWorkflowRun: null,
+  editingWorkflowId: null,
   routines: [],
   dispatches: [],
   audit: [],
@@ -174,6 +184,7 @@ const state = {
   companionDevices: [],
   templates: [],
   metrics: null,
+  trainingJobs: [],
 };
 
 const els = {
@@ -193,6 +204,17 @@ const els = {
   agentName: document.getElementById("agentName"),
   agentGoal: document.getElementById("agentGoal"),
   agentList: document.getElementById("agentList"),
+  workflowForm: document.getElementById("workflowForm"),
+  workflowName: document.getElementById("workflowName"),
+  workflowDescription: document.getElementById("workflowDescription"),
+  workflowParallelism: document.getElementById("workflowParallelism"),
+  workflowNodes: document.getElementById("workflowNodes"),
+  workflowOwnerApproved: document.getElementById("workflowOwnerApproved"),
+  workflowResetButton: document.getElementById("workflowResetButton"),
+  workflowRefreshButton: document.getElementById("workflowRefreshButton"),
+  workflowList: document.getElementById("workflowList"),
+  workflowRunList: document.getElementById("workflowRunList"),
+  workflowRunDetail: document.getElementById("workflowRunDetail"),
   routineForm: document.getElementById("routineForm"),
   routineName: document.getElementById("routineName"),
   routineGoal: document.getElementById("routineGoal"),
@@ -244,6 +266,8 @@ const els = {
   companionDeviceList: document.getElementById("companionDeviceList"),
   trainingExportButton: document.getElementById("trainingExportButton"),
   trainingPrepareLoraButton: document.getElementById("trainingPrepareLoraButton"),
+  trainingJobList: document.getElementById("trainingJobList"),
+  trainingJobDetail: document.getElementById("trainingJobDetail"),
   refreshModelsButton: document.getElementById("refreshModelsButton"),
   providerModelStatus: document.getElementById("providerModelStatus"),
   providerModelList: document.getElementById("providerModelList"),
@@ -273,6 +297,8 @@ const els = {
   screenContext: document.getElementById("screenContext"),
   networkPolicy: document.getElementById("networkPolicy"),
   executionEnvironment: document.getElementById("executionEnvironment"),
+  approvalPolicy: document.getElementById("approvalPolicy"),
+  voiceMode: document.getElementById("voiceMode"),
   // Hero stats
   statTools: document.getElementById("statTools"),
   statMemories: document.getElementById("statMemories"),
@@ -301,6 +327,7 @@ const els = {
 let activeVoiceRecognition = null;
 let streamedSpeechBuffer = "";
 let activePairingURI = "";
+let chatStreaming = false;
 
 function voiceOutputEnabled() {
   return Boolean(state.settings?.voice_enabled);
@@ -463,6 +490,31 @@ const defaultRoutineSteps = [
   },
 ];
 
+const defaultWorkflowNodes = [
+  {
+    key: "inspect",
+    label: "Inspect workspace",
+    kind: "tool",
+    tool_id: "filesystem.list_directory",
+    payload: { path: "." },
+    dependencies: [],
+    dependency_policy: "all_success",
+    failure_policy: "fail",
+    timeout_seconds: 1800,
+  },
+  {
+    key: "verify",
+    label: "Verify result",
+    kind: "tool",
+    tool_id: "diagnostics.run_self_check",
+    payload: { source: "workflow", auto_repair: false },
+    dependencies: ["inspect"],
+    dependency_policy: "all_success",
+    failure_policy: "fail",
+    timeout_seconds: 900,
+  },
+];
+
 async function fetchJSON(url, options = {}) {
   const response = await fetch(url, {
     headers: { "Content-Type": "application/json" },
@@ -483,6 +535,8 @@ async function refreshAll() {
       tasks,
       memories,
       agents,
+      workflows,
+      workflowRuns,
       routines,
       dispatches,
       audit,
@@ -496,12 +550,15 @@ async function refreshAll() {
       companionDevices,
       templatesResult,
       metricsResult,
+      trainingJobsResult,
     ] = await Promise.all([
       fetchJSON("/api/status"),
       fetchJSON("/api/conversations?limit=50"),
       fetchJSON("/api/tasks"),
       fetchJSON("/api/memories"),
       fetchJSON("/api/agents"),
+      fetchJSON("/api/workflows"),
+      fetchJSON("/api/workflow-runs?limit=50"),
       fetchJSON("/api/routines"),
       fetchJSON("/api/dispatches?limit=12"),
       fetchJSON("/api/audit"),
@@ -515,6 +572,7 @@ async function refreshAll() {
       fetchJSON("/api/companion/devices"),
       fetchJSON("/api/agents/templates"),
       fetchJSON("/api/metrics"),
+      fetchJSON("/api/training/jobs"),
     ]);
 
     state.status = status;
@@ -522,6 +580,8 @@ async function refreshAll() {
     state.tasks = tasks.items;
     state.memories = memories.items;
     state.agents = agents.items;
+    state.workflows = workflows.items;
+    state.workflowRuns = workflowRuns.items;
     state.routines = routines.items;
     state.dispatches = dispatches.items;
     state.audit = audit.items;
@@ -535,10 +595,15 @@ async function refreshAll() {
     state.companionDevices = companionDevices.items;
     state.templates = templatesResult.items || [];
     state.metrics = metricsResult;
+    state.trainingJobs = trainingJobsResult.items || [];
     await refreshProviderModels(settings);
     render();
   } catch (error) {
-    els.statusPill.textContent = error.message;
+    // Persistent, visible error in the status pill (not overwritten by the
+    // initial 'Connecting…' placeholder). Cleared on the next successful render.
+    els.statusPill.textContent = `Connection error: ${error.message}`;
+    els.statusPill.classList.add('danger-status');
+    els.statusPill.title = error.message;
     showToast(`Connection error: ${error.message}`, 'error');
   }
 }
@@ -647,6 +712,7 @@ function render() {
     <strong>${escapeHTML(routine.name)}</strong>
     <div>${escapeHTML(routine.goal)}</div>
     <div class="meta-row">
+      <span class="tag">v${routine.version || 1}</span>
       <span class="tag">${routine.trigger_type}</span>
       <span class="tag">${routine.trusted ? "trusted" : "approval-gated"}</span>
       <span>${routine.steps.length} step${routine.steps.length === 1 ? "" : "s"}</span>
@@ -656,10 +722,14 @@ function render() {
     <div class="list-actions">
       <button type="button" class="secondary-button run-routine-button" data-routine-id="${routine.id}">Run Routine</button>
       <button type="button" class="secondary-button history-routine-btn btn-sm" data-routine-id="${routine.id}">History</button>
+      <button type="button" class="secondary-button versions-routine-btn btn-sm" data-routine-id="${routine.id}">Versions</button>
       <button type="button" class="danger-btn-mini delete-routine-btn" data-routine-id="${routine.id}">Delete</button>
     </div>
     <div class="run-history-panel" id="routine-history-${routine.id}" style="display:none"></div>
   `);
+
+  renderWorkflows();
+  renderTrainingJobs();
 
   els.dispatchList.innerHTML = renderItems(state.dispatches, (dispatch) => `
     <strong>${escapeHTML(dispatch.project_name)}</strong>
@@ -776,10 +846,15 @@ function render() {
   if (els.screenContext) els.screenContext.value = state.settings.screen_context || "manual";
   if (els.networkPolicy) els.networkPolicy.value = state.settings.network_policy || "selected_services";
   if (els.executionEnvironment) els.executionEnvironment.value = state.settings.execution_environment || "sandbox_first";
+  if (els.approvalPolicy) els.approvalPolicy.value = state.settings.approval_policy || "ask_on_risky";
+  if (els.voiceMode) els.voiceMode.value = state.settings.voice_mode || "push_to_talk";
   els.providerModelStatus.textContent = providerModelStatusText();
   els.providerModelList.innerHTML = renderProviderModels();
   if (!els.routineSteps.value.trim()) {
     els.routineSteps.value = JSON.stringify(defaultRoutineSteps, null, 2);
+  }
+  if (els.workflowNodes && !els.workflowNodes.value.trim()) {
+    els.workflowNodes.value = JSON.stringify(defaultWorkflowNodes, null, 2);
   }
 
   if (els.outlookEnabled) els.outlookEnabled.checked = Boolean(state.settings.outlook_enabled);
@@ -872,6 +947,8 @@ function setToolPayloadExample() {
   const sample = defaultToolPayloads[toolId];
   if (sample) {
     els.toolPayload.value = JSON.stringify(sample, null, 2);
+  } else {
+    els.toolPayload.value = "{}";
   }
 }
 
@@ -1087,6 +1164,50 @@ els.companionDeviceList.addEventListener("click", async (event) => {
   }
 });
 
+function renderTrainingJobs() {
+  if (!els.trainingJobList) return;
+  if (!state.trainingJobs.length) {
+    els.trainingJobList.innerHTML = '<div class="empty-state">No LoRA jobs have been prepared yet.</div>';
+    return;
+  }
+  els.trainingJobList.innerHTML = state.trainingJobs.map((job) => {
+    const report = job.latest_evaluation || {};
+    const comparison = report.comparison || {};
+    const approved = Boolean(report.promotion?.approved);
+    const baseScore = comparison.base?.score;
+    const adapterScore = comparison.adapter?.score;
+    const score = (value) => Number.isFinite(Number(value))
+      ? `${(Number(value) * 100).toFixed(1)}%`
+      : "not evaluated";
+    return `
+      <article class="training-job-row">
+        <div class="training-job-head">
+          <div>
+            <strong>${escapeHTML(job.job_id)}</strong>
+            <div>${escapeHTML(job.base_model || "Unknown base model")}</div>
+          </div>
+          <span class="tag outcome-tag-${escapeHTML(job.status)}">${escapeHTML(job.status.replaceAll("_", " "))}</span>
+        </div>
+        <div class="training-job-metrics">
+          <span>Base ${score(baseScore)}</span>
+          <span>Adapter ${score(adapterScore)}</span>
+          <span>${job.artifact_valid ? "Artifacts valid" : "Artifacts pending"}</span>
+          <span>${approved ? "Promotion gate passed" : "Not approved for promotion"}</span>
+        </div>
+        <div class="list-actions">
+          <button type="button" class="secondary-button audit-training-job-button btn-sm" data-job-id="${job.job_id}">Audit</button>
+          ${approved && !job.promoted
+            ? `<button type="button" class="promote-training-job-button btn-sm" data-job-id="${job.job_id}">Promote</button>`
+            : ""}
+          ${job.promoted
+            ? `<button type="button" class="danger-btn-mini rollback-training-job-button btn-sm" data-job-id="${job.job_id}">Roll Back</button>`
+            : ""}
+        </div>
+      </article>
+    `;
+  }).join("");
+}
+
 els.trainingExportButton.addEventListener("click", async () => {
   els.trainingExportButton.disabled = true;
   try {
@@ -1124,6 +1245,55 @@ els.trainingPrepareLoraButton.addEventListener("click", async () => {
     showToast(error.message, "error");
   } finally {
     els.trainingPrepareLoraButton.disabled = false;
+  }
+});
+
+els.trainingJobList?.addEventListener("click", async (event) => {
+  const auditButton = event.target.closest(".audit-training-job-button");
+  const promoteButton = event.target.closest(".promote-training-job-button");
+  const rollbackButton = event.target.closest(".rollback-training-job-button");
+  const button = auditButton || promoteButton || rollbackButton;
+  if (!button) return;
+  const jobId = button.dataset.jobId;
+  if (!jobId) return;
+
+  if (promoteButton && !window.confirm("Promote this evaluated adapter as Project Q's active local specialist?")) {
+    return;
+  }
+  if (rollbackButton && !window.confirm("Roll back this active adapter to the previous local model state?")) {
+    return;
+  }
+
+  button.disabled = true;
+  try {
+    let result;
+    if (auditButton) {
+      result = await fetchJSON(`/api/training/jobs/${jobId}/audit`, {
+        method: "POST",
+        body: "{}",
+      });
+    } else if (promoteButton) {
+      result = await fetchJSON(`/api/training/jobs/${jobId}/promote`, {
+        method: "POST",
+        body: JSON.stringify({ owner_confirmed: true }),
+      });
+    } else {
+      result = await fetchJSON(`/api/training/jobs/${jobId}/rollback`, {
+        method: "POST",
+        body: JSON.stringify({ owner_confirmed: true }),
+      });
+    }
+    els.trainingJobDetail.textContent = JSON.stringify(result, null, 2);
+    showToast(
+      auditButton ? "Training job audited" : promoteButton ? "Adapter promoted" : "Adapter rolled back",
+      "success",
+    );
+    await refreshAll();
+  } catch (error) {
+    els.trainingJobDetail.textContent = error.message;
+    showToast(error.message, "error");
+  } finally {
+    button.disabled = false;
   }
 });
 
@@ -1175,7 +1345,7 @@ els.agentList.addEventListener("click", async (event) => {
     if (!panel) return;
     const isOpen = panel.style.display !== 'none';
     if (isOpen) { panel.style.display = 'none'; histBtn.textContent = 'History'; return; }
-    histBtn.textContent = 'Loading…';
+    histBtn.textContent = 'Loading...';
     try {
       const runs = await fetchJSON(`/api/agents/${agentId}/runs?limit=10`);
       const items = runs.items || [];
@@ -1184,7 +1354,8 @@ els.agentList.addEventListener("click", async (event) => {
         : items.map(r => `
           <div class="run-history-entry">
             <span class="tag outcome-tag-${escapeHTML(r.outcome || r.status)}">${r.outcome || r.status}</span>
-            <span>${escapeHTML(r.started_at || '')} — ${escapeHTML(r.summary || r.mode || '')}</span>
+            <span class="tag">v${escapeHTML(String(r.definition_version || "?"))}</span>
+            <span>${escapeHTML(r.started_at || r.created_at || '')} - ${escapeHTML((r.reply || r.warning || r.reasoning_mode || '').slice(0, 180))}</span>
           </div>`).join('');
       panel.style.display = 'block';
     } catch (error) {
@@ -1196,10 +1367,171 @@ els.agentList.addEventListener("click", async (event) => {
   }
 });
 
+els.workflowForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const name = els.workflowName.value.trim();
+  if (!name) return;
+  const submitButton = els.workflowForm.querySelector('button[type="submit"]');
+  if (submitButton) submitButton.disabled = true;
+  try {
+    const nodes = JSON.parse(els.workflowNodes.value);
+    if (!Array.isArray(nodes)) throw new Error("Workflow nodes must be a JSON array");
+    const payload = {
+      name,
+      description: els.workflowDescription.value.trim(),
+      parallelism: Number(els.workflowParallelism.value || 1),
+      nodes,
+    };
+    const url = state.editingWorkflowId
+      ? `/api/workflows/${state.editingWorkflowId}`
+      : "/api/workflows";
+    await fetchJSON(url, {
+      method: state.editingWorkflowId ? "PUT" : "POST",
+      body: JSON.stringify(payload),
+    });
+    showToast(state.editingWorkflowId ? "Workflow version saved" : "Workflow created", "success");
+    resetWorkflowForm();
+    await refreshAll();
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    if (submitButton) submitButton.disabled = false;
+  }
+});
+
+els.workflowResetButton.addEventListener("click", resetWorkflowForm);
+els.workflowRefreshButton.addEventListener("click", refreshAll);
+
+els.workflowList.addEventListener("click", async (event) => {
+  const runButton = event.target.closest(".run-workflow-button");
+  const editButton = event.target.closest(".edit-workflow-button");
+  const archiveButton = event.target.closest(".archive-workflow-button");
+  const workflowId = (runButton || editButton || archiveButton)?.dataset.workflowId;
+  if (!workflowId) return;
+  const workflow = state.workflows.find((item) => item.id === workflowId);
+  if (!workflow) return;
+
+  try {
+    if (editButton) {
+      state.editingWorkflowId = workflowId;
+      els.workflowName.value = workflow.name;
+      els.workflowDescription.value = workflow.description || "";
+      els.workflowParallelism.value = String(workflow.parallelism);
+      els.workflowNodes.value = JSON.stringify(workflow.nodes, null, 2);
+      els.workflowName.focus();
+      return;
+    }
+    if (archiveButton) {
+      await fetchJSON(`/api/workflows/${workflowId}`, { method: "DELETE" });
+      showToast(`Archived workflow "${workflow.name}"`, "info");
+      await refreshAll();
+      return;
+    }
+    runButton.disabled = true;
+    const run = await fetchJSON(`/api/workflows/${workflowId}/runs`, {
+      method: "POST",
+      body: JSON.stringify({ owner_approved: els.workflowOwnerApproved.checked }),
+    });
+    state.selectedWorkflowRun = run;
+    showToast(`Started workflow "${workflow.name}"`, "success");
+    await refreshAll();
+    await refreshSelectedWorkflowRun(run.id);
+    watchWorkflowRun(run.id);
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    if (runButton) runButton.disabled = false;
+  }
+});
+
+els.workflowRunList.addEventListener("click", async (event) => {
+  const inspectButton = event.target.closest(".inspect-workflow-run-button");
+  const cancelButton = event.target.closest(".cancel-workflow-run-button");
+  const retryButton = event.target.closest(".retry-workflow-run-button");
+  const runId = (inspectButton || cancelButton || retryButton)?.dataset.runId;
+  if (!runId) return;
+  try {
+    if (cancelButton) {
+      await fetchJSON(`/api/workflow-runs/${runId}/cancel`, {
+        method: "POST",
+        body: JSON.stringify({ reason: "Cancelled from dashboard" }),
+      });
+      showToast("Workflow cancellation requested", "info");
+    } else if (retryButton) {
+      const retried = await fetchJSON(`/api/workflow-runs/${runId}/retry`, {
+        method: "POST",
+        body: JSON.stringify({ owner_approved: els.workflowOwnerApproved.checked }),
+      });
+      state.selectedWorkflowRun = retried;
+      showToast("Workflow retry started", "success");
+      watchWorkflowRun(retried.id);
+    }
+    await refreshAll();
+    const selectedId = retryButton ? state.selectedWorkflowRun?.id : runId;
+    if (selectedId) {
+      await refreshSelectedWorkflowRun(selectedId);
+      if (!workflowTerminal(state.selectedWorkflowRun.status)) watchWorkflowRun(selectedId);
+    }
+  } catch (error) {
+    showToast(error.message, "error");
+  }
+});
+
+els.workflowRunDetail.addEventListener("click", async (event) => {
+  const approveButton = event.target.closest(".approve-workflow-node-button");
+  const rejectButton = event.target.closest(".reject-workflow-node-button");
+  const button = approveButton || rejectButton;
+  if (!button) return;
+  const runId = button.dataset.runId;
+  const nodeId = button.dataset.nodeId;
+  if (!runId || !nodeId) return;
+  button.disabled = true;
+  try {
+    await fetchJSON(`/api/workflow-runs/${runId}/nodes/${nodeId}/decision`, {
+      method: "POST",
+      body: JSON.stringify({
+        approved: Boolean(approveButton),
+        note: approveButton ? "Approved from dashboard" : "Rejected from dashboard",
+      }),
+    });
+    showToast(approveButton ? "Checkpoint approved" : "Checkpoint rejected", "success");
+    await refreshAll();
+    await refreshSelectedWorkflowRun(runId);
+    if (!workflowTerminal(state.selectedWorkflowRun.status)) watchWorkflowRun(runId);
+  } catch (error) {
+    showToast(error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+});
+
 els.routineList.addEventListener("click", async (event) => {
   const runBtn  = event.target.closest(".run-routine-button");
   const delBtn  = event.target.closest(".delete-routine-btn");
   const histBtn = event.target.closest(".history-routine-btn");
+  const versionsBtn = event.target.closest(".versions-routine-btn");
+  const rollbackBtn = event.target.closest(".rollback-routine-version-btn");
+
+  if (rollbackBtn) {
+    const routineId = rollbackBtn.dataset.routineId;
+    const version = Number(rollbackBtn.dataset.version || 0);
+    if (!routineId || !version) return;
+    if (!window.confirm(`Roll this routine back to version ${version}?`)) return;
+    rollbackBtn.disabled = true;
+    try {
+      const result = await fetchJSON(`/api/routines/${routineId}/rollback`, {
+        method: "POST",
+        body: JSON.stringify({ version, owner_confirmed: true }),
+      });
+      els.toolResult.textContent = JSON.stringify(result, null, 2);
+      showToast(`Routine rolled back to v${version}`, "success");
+      await refreshAll();
+    } catch (error) {
+      showToast(error.message, "error");
+      rollbackBtn.disabled = false;
+    }
+    return;
+  }
 
   if (delBtn) {
     const routineId = delBtn.dataset.routineId;
@@ -1223,7 +1555,7 @@ els.routineList.addEventListener("click", async (event) => {
     if (!panel) return;
     const isOpen = panel.style.display !== 'none';
     if (isOpen) { panel.style.display = 'none'; histBtn.textContent = 'History'; return; }
-    histBtn.textContent = 'Loading…';
+    histBtn.textContent = 'Loading...';
     try {
       const runs = await fetchJSON(`/api/routines/${routineId}/runs?limit=10`);
       const items = runs.items || [];
@@ -1232,7 +1564,8 @@ els.routineList.addEventListener("click", async (event) => {
         : items.map(r => `
           <div class="run-history-entry">
             <span class="tag outcome-tag-${escapeHTML(r.outcome || r.status)}">${r.outcome || r.status}</span>
-            <span>${escapeHTML(r.started_at || '')} — ${escapeHTML(r.summary || '')}</span>
+            <span class="tag">v${escapeHTML(String(r.routine_version || "?"))}</span>
+            <span>${escapeHTML(r.created_at || '')} - ${escapeHTML((r.reply || r.warning || '').slice(0, 180))}</span>
           </div>`).join('');
       panel.style.display = 'block';
     } catch (error) {
@@ -1240,6 +1573,48 @@ els.routineList.addEventListener("click", async (event) => {
       panel.style.display = 'block';
     } finally {
       histBtn.textContent = 'History';
+    }
+    return;
+  }
+
+  if (versionsBtn) {
+    const routineId = versionsBtn.dataset.routineId;
+    if (!routineId) return;
+    const panel = document.getElementById(`routine-history-${routineId}`);
+    if (!panel) return;
+    const isOpen = panel.style.display !== 'none';
+    if (isOpen) { panel.style.display = 'none'; versionsBtn.textContent = 'Versions'; return; }
+    versionsBtn.textContent = 'Loading...';
+    try {
+      const versions = await fetchJSON(`/api/routines/${routineId}/versions`);
+      const items = versions.items || [];
+      const routine = state.routines.find((item) => item.id === routineId);
+      const currentVersion = Number(routine?.version || 0);
+      panel.innerHTML = items.length === 0
+        ? '<p class="helper-copy" style="margin:4px 0">No versions yet.</p>'
+        : items.map((version) => {
+          const isCurrent = Number(version.version) === currentVersion;
+          const rollbackNote = version.rollback_of_version
+            ? `<span class="tag">rollback of v${escapeHTML(String(version.rollback_of_version))}</span>`
+            : "";
+          const rollbackControl = isCurrent
+            ? '<span class="tag">current</span>'
+            : `<button type="button" class="secondary-button btn-sm rollback-routine-version-btn" data-routine-id="${routineId}" data-version="${version.version}">Roll Back</button>`;
+          return `
+            <div class="run-history-entry">
+              <span class="tag">v${escapeHTML(String(version.version))}</span>
+              ${rollbackNote}
+              <span>${escapeHTML(version.created_at || "")}</span>
+              <span>${escapeHTML(version.goal || "")}</span>
+              ${rollbackControl}
+            </div>`;
+        }).join('');
+      panel.style.display = 'block';
+    } catch (error) {
+      panel.innerHTML = `<p class="helper-copy" style="color:var(--danger)">${escapeHTML(error.message)}</p>`;
+      panel.style.display = 'block';
+    } finally {
+      versionsBtn.textContent = 'Versions';
     }
     return;
   }
@@ -1270,6 +1645,7 @@ els.chatForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const message = els.chatInput.value.trim();
   if (!message) return;
+  chatStreaming = true;
   const submitBtn = els.chatForm.querySelector('button[type="submit"]');
   if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = "Sending…"; }
 
@@ -1331,6 +1707,7 @@ els.chatForm.addEventListener("submit", async (event) => {
     updateConversationFeed();
     showToast(error.message, "error");
   } finally {
+    chatStreaming = false;
     if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = "Send ↵"; }
     els.chatApproval.checked = false;
     // Re-sync from server to pick up canonical IDs and any tool side-effects
@@ -1522,6 +1899,8 @@ els.settingsForm.addEventListener("submit", async (event) => {
       screen_context: els.screenContext ? els.screenContext.value : undefined,
       network_policy: els.networkPolicy ? els.networkPolicy.value : undefined,
       execution_environment: els.executionEnvironment ? els.executionEnvironment.value : undefined,
+      approval_policy: els.approvalPolicy ? els.approvalPolicy.value : undefined,
+      voice_mode: els.voiceMode ? els.voiceMode.value : undefined,
       outlook_enabled: els.outlookEnabled ? els.outlookEnabled.checked : undefined,
       scheduler_enabled: els.schedulerEnabled ? els.schedulerEnabled.checked : undefined,
       auto_reflect_on_tasks: els.autoReflectOnTasks ? els.autoReflectOnTasks.checked : undefined,
@@ -1917,6 +2296,181 @@ function templateIcon(id) {
   return icons[id] || '◆';
 }
 
+let workflowEventSource = null;
+let workflowPollTimer = null;
+
+function workflowTerminal(status) {
+  return ["completed", "failed", "cancelled"].includes(status);
+}
+
+function workflowProgress(run) {
+  const nodes = run.nodes || [];
+  const terminal = nodes.filter((node) =>
+    ["succeeded", "failed", "skipped", "cancelled"].includes(node.status)
+  ).length;
+  return { terminal, total: nodes.length || 1 };
+}
+
+function renderWorkflows() {
+  if (!els.workflowList || !els.workflowRunList || !els.workflowRunDetail) return;
+  els.workflowList.innerHTML = renderItems(state.workflows, (workflow) => `
+    <div class="workflow-definition-head">
+      <div>
+        <strong>${escapeHTML(workflow.name)}</strong>
+        <div>${escapeHTML(workflow.description || "No description")}</div>
+      </div>
+      <span class="tag">v${workflow.version}</span>
+    </div>
+    <div class="meta-row">
+      <span class="tag">${workflow.parallelism} parallel</span>
+      <span class="tag">${workflow.nodes.length} nodes</span>
+      <span class="tag status-tag-${escapeHTML(workflow.status)}">${escapeHTML(workflow.status)}</span>
+    </div>
+    <ol class="workflow-dag-list">
+      ${workflow.nodes.map((node) => `
+        <li>
+          <span class="workflow-node-key">${escapeHTML(node.key)}</span>
+          <span>${escapeHTML(node.kind)}</span>
+          <span>${node.dependencies.length ? `after ${escapeHTML(node.dependencies.join(", "))}` : "root"}</span>
+        </li>
+      `).join("")}
+    </ol>
+    <div class="list-actions">
+      <button type="button" class="run-workflow-button" data-workflow-id="${workflow.id}">Run</button>
+      <button type="button" class="secondary-button edit-workflow-button" data-workflow-id="${workflow.id}">Edit</button>
+      <button type="button" class="danger-btn-mini archive-workflow-button" data-workflow-id="${workflow.id}">Archive</button>
+    </div>
+  `);
+
+  els.workflowRunList.innerHTML = state.workflowRuns.map((run) => {
+    const progress = workflowProgress(run);
+    const name = run.definition_snapshot?.name || run.workflow_id;
+    return `
+      <article class="workflow-run-row">
+        <div class="workflow-run-main">
+          <div class="workflow-definition-head">
+            <strong>${escapeHTML(name)}</strong>
+            <span class="tag outcome-tag-${escapeHTML(run.status)}">${escapeHTML(run.status)}</span>
+          </div>
+          <progress value="${progress.terminal}" max="${progress.total}" aria-label="${escapeHTML(name)} progress"></progress>
+          <div class="meta-row">
+            <span>${progress.terminal}/${progress.total} nodes</span>
+            <span>${escapeHTML(run.created_at)}</span>
+          </div>
+        </div>
+        <div class="workflow-run-actions">
+          <button type="button" class="secondary-button inspect-workflow-run-button btn-sm" data-run-id="${run.id}">Inspect</button>
+          ${workflowTerminal(run.status)
+            ? `<button type="button" class="secondary-button retry-workflow-run-button btn-sm" data-run-id="${run.id}">Retry</button>`
+            : `<button type="button" class="danger-btn-mini cancel-workflow-run-button btn-sm" data-run-id="${run.id}">Cancel</button>`}
+        </div>
+      </article>
+    `;
+  }).join("");
+
+  const run = state.selectedWorkflowRun;
+  if (!run) {
+    els.workflowRunDetail.textContent = "Select a run to inspect node results and events.";
+    return;
+  }
+  const progress = workflowProgress(run);
+  els.workflowRunDetail.innerHTML = `
+    <div class="workflow-detail-head">
+      <div>
+        <p class="card-label">Selected Run</p>
+        <strong>${escapeHTML(run.definition_snapshot?.name || run.workflow_id)}</strong>
+      </div>
+      <span class="tag outcome-tag-${escapeHTML(run.status)}">${escapeHTML(run.status)}</span>
+    </div>
+    <progress value="${progress.terminal}" max="${progress.total}" aria-label="Selected workflow progress"></progress>
+    <div class="workflow-node-table">
+      ${(run.nodes || []).map((node) => `
+        <div class="workflow-node-row">
+          <span class="workflow-node-key">${escapeHTML(node.node_key)}</span>
+          <span class="tag outcome-tag-${escapeHTML(node.status)}">${escapeHTML(node.status)}</span>
+          <div>
+            <span>${escapeHTML(
+              node.node_snapshot?.kind === "approval"
+                ? node.node_snapshot.prompt
+                : node.error || summarizeWorkflowResult(node.result)
+            )}</span>
+            ${node.status === "waiting_approval"
+              ? `<div class="list-actions workflow-approval-actions">
+                  <button type="button" class="approve-workflow-node-button btn-sm" data-run-id="${run.id}" data-node-id="${node.id}">Approve</button>
+                  <button type="button" class="danger-btn-mini reject-workflow-node-button btn-sm" data-run-id="${run.id}" data-node-id="${node.id}">Reject</button>
+                </div>`
+              : ""}
+          </div>
+        </div>
+      `).join("")}
+    </div>
+    <details class="workflow-event-panel" open>
+      <summary>Event log (${(run.events || []).length})</summary>
+      <div class="workflow-event-list">
+        ${(run.events || []).slice(-30).map((event) => `
+          <div>
+            <span>${event.sequence}</span>
+            <strong>${escapeHTML(event.event_type)}</strong>
+            <span>${escapeHTML(event.created_at)}</span>
+          </div>
+        `).join("") || '<p class="helper-copy">No events recorded.</p>'}
+      </div>
+    </details>
+    <details class="workflow-event-panel">
+      <summary>Result payload</summary>
+      <pre class="console-output console-sm">${escapeHTML(JSON.stringify(run.result || {}, null, 2))}</pre>
+    </details>
+  `;
+}
+
+function summarizeWorkflowResult(result) {
+  if (!result || Object.keys(result).length === 0) return "No result yet";
+  const value = result.summary || result.title || result.path || JSON.stringify(result);
+  return String(value).slice(0, 180);
+}
+
+function resetWorkflowForm() {
+  state.editingWorkflowId = null;
+  els.workflowName.value = "";
+  els.workflowDescription.value = "";
+  els.workflowParallelism.value = "2";
+  els.workflowNodes.value = JSON.stringify(defaultWorkflowNodes, null, 2);
+}
+
+async function refreshSelectedWorkflowRun(runId) {
+  const run = await fetchJSON(`/api/workflow-runs/${runId}`);
+  state.selectedWorkflowRun = run;
+  const index = state.workflowRuns.findIndex((item) => item.id === run.id);
+  if (index >= 0) state.workflowRuns[index] = run;
+  renderWorkflows();
+  if (workflowTerminal(run.status)) stopWorkflowWatch();
+  return run;
+}
+
+function stopWorkflowWatch() {
+  if (workflowEventSource) workflowEventSource.close();
+  workflowEventSource = null;
+  if (workflowPollTimer) clearInterval(workflowPollTimer);
+  workflowPollTimer = null;
+}
+
+function watchWorkflowRun(runId) {
+  stopWorkflowWatch();
+  if ("EventSource" in window) {
+    workflowEventSource = new EventSource(`/api/workflow-runs/${runId}/events/stream?after=0`);
+    workflowEventSource.addEventListener("workflow", () => {
+      refreshSelectedWorkflowRun(runId).catch(() => {});
+    });
+    workflowEventSource.onerror = () => {
+      if (workflowEventSource) workflowEventSource.close();
+      workflowEventSource = null;
+    };
+  }
+  workflowPollTimer = setInterval(() => {
+    refreshSelectedWorkflowRun(runId).catch(() => {});
+  }, 2000);
+}
+
 function renderMetrics() {
   const m = state.metrics;
   if (!m) return;
@@ -1949,6 +2503,10 @@ function escapeHTML(value) {
 function processInline(text) {
   return escapeHTML(text)
     .replace(/`([^`]+)`/g, '<code class="md-inline-code">$1</code>')
+    // Safe autolinks: http/https/mailto only (runs on already-escaped text, so
+    // quotes are &quot; — the href cannot break out of the attribute). No
+    // javascript:/data: URIs are matched.
+    .replace(/\b(https?:\/\/[^\s<]+|mailto:[^\s<]+)/g, (m) => `<a href="${m}" rel="noopener noreferrer" target="_blank" class="md-link">${m}</a>`)
     .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\*([^*\n]+)\*/g, '<em>$1</em>')
     .replace(/__([^_\n]+)__/g, '<strong>$1</strong>')
@@ -2002,6 +2560,10 @@ function renderMarkdown(raw) {
 // ── Conversation feed renderer (oldest-first, auto-scroll) ───────────────
 function updateConversationFeed() {
   // state.conversations is DESC (newest first); display ASC (oldest at top)
+  if (state.conversations.length === 0) {
+    els.conversationFeed.innerHTML = '<div class="empty-state">No messages yet. Send a command to Project Q.</div>';
+    return;
+  }
   const ordered = state.conversations.slice().reverse();
   els.conversationFeed.innerHTML = ordered.map(msg => {
     const streaming = msg._streaming;
@@ -2021,4 +2583,9 @@ function updateConversationFeed() {
 refreshAll();
 
 // ── Auto-refresh every 30 s ───────────────────────────────────────────────
-setInterval(refreshAll, 30_000);
+setInterval(() => {
+  // Skip while a chat response is streaming so a tick cannot wipe the
+  // in-progress streamed message or an error message in the conversation feed.
+  if (chatStreaming) return;
+  refreshAll();
+}, 30_000);

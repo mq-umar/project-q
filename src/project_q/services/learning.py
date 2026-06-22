@@ -95,12 +95,12 @@ class LearningLabService:
             "interval_seconds": resolved_interval,
         }
 
-    def stop(self) -> dict[str, Any]:
+    def stop(self, timeout_seconds: float | None = 15.0) -> dict[str, Any]:
         with self._lock:
             thread = self._thread
             self._stop_event.set()
-        if thread is not None:
-            thread.join(timeout=2)
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=timeout_seconds)
         self.settings_service.update(SettingsUpdate(learning_enabled=False))
         with self._lock:
             if self._thread is not None and not self._thread.is_alive():
@@ -406,7 +406,8 @@ class LearningLabService:
         }
 
     def reflect_on_task(self, task_id: str) -> dict[str, Any]:
-        """Fetch a task, inspect related audit entries, and store a lesson memory."""
+        """Run the PRD §6.2 reflection pass: outcome assessment, assumption audit,
+        memory update, model-performance note, and a (never auto-trusted) playbook."""
         task = self.task_service.get(task_id)
         task_title = task.get("title", task_id)
         task_status = task.get("status", "unknown")
@@ -418,10 +419,28 @@ class LearningLabService:
             if task_id in str(e.get("metadata", ""))
         ]
         tools_used = list({e["tool_name"] for e in related if e.get("tool_name")})
+        completed_tools = [
+            e["tool_name"] for e in related
+            if e.get("tool_name") and e.get("outcome") == "completed"
+        ]
+        failed_tools = sorted({
+            e["tool_name"] for e in related
+            if e.get("tool_name") and e.get("outcome") in {"failed", "blocked"}
+        })
         errors = [
             e["error"] for e in related
             if e.get("error") and e["outcome"] in {"failed", "blocked"}
         ]
+
+        # PRD §6.2 (2) Assumption audit: which steps held vs failed.
+        assumption_audit = {"held": sorted(set(completed_tools)), "failed": failed_tools}
+        # PRD §6.2 (5) Model-performance note: which model drove the work.
+        model_counts: dict[str, int] = {}
+        for entry in related:
+            model = str(entry.get("model") or "").strip()
+            if model:
+                model_counts[model] = model_counts.get(model, 0) + 1
+        model_note = max(model_counts, key=model_counts.get) if model_counts else ""
 
         if task_status == "completed":
             tools_str = ", ".join(tools_used) if tools_used else "no recorded tools"
@@ -440,10 +459,52 @@ class LearningLabService:
                 confidence=confidence,
                 owner_confirmed=False,
                 tags=["task_reflection", task_id],
-                metadata={"task_id": task_id, "task_status": task_status, "tools_used": tools_used},
+                metadata={
+                    "task_id": task_id,
+                    "task_status": task_status,
+                    "tools_used": tools_used,
+                    "assumption_audit": assumption_audit,
+                    "model_note": model_note,
+                },
             )
         )
-        return {"task_id": task_id, "memory_id": memory["id"], "text": text}
+
+        # PRD §6.2 (4) Playbook update: record a reusable procedural playbook
+        # CANDIDATE on a clean success. Never auto-trusted — the owner promotes it.
+        playbook: dict[str, Any] = {"promotable": False, "reason": "task did not complete cleanly"}
+        playbook_memory_id = ""
+        if task_status == "completed" and completed_tools and not failed_tools:
+            playbook = {
+                "promotable": True,
+                "tool_sequence": completed_tools,
+                "recommendation": "Owner can promote this tool sequence to a trusted routine.",
+            }
+            playbook_mem = self.memory_service.create(
+                MemoryCreate(
+                    text=(
+                        f"Playbook candidate from task '{task_title}': "
+                        f"{' -> '.join(completed_tools)}."
+                    ),
+                    kind="procedural",
+                    source="learning_lab",
+                    confidence=0.78,
+                    owner_confirmed=False,
+                    tags=["playbook_candidate", task_id],
+                    metadata={"task_id": task_id, "tool_sequence": completed_tools},
+                )
+            )
+            playbook_memory_id = playbook_mem["id"]
+
+        return {
+            "task_id": task_id,
+            "memory_id": memory["id"],
+            "text": text,
+            "outcome_assessment": text,
+            "assumption_audit": assumption_audit,
+            "model_note": model_note,
+            "playbook": playbook,
+            "playbook_memory_id": playbook_memory_id,
+        }
 
     @staticmethod
     def _is_expected_policy_block(entry: dict[str, Any]) -> bool:
@@ -477,6 +538,9 @@ class LearningLabService:
         return [memory["id"]]
 
     def _write_follow_up_tasks(self, findings: list[dict[str, Any]]) -> list[str]:
+        # PRD §12.1 Proactive Mode: "off" suppresses proactive follow-up task creation.
+        if str(self.settings_service.get_all().get("proactive_mode", "active")) == "off":
+            return []
         existing_titles = {task["title"].strip().lower() for task in self.task_service.list_all(limit=500)}
         created: list[str] = []
         for finding in findings:

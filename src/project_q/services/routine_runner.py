@@ -64,6 +64,7 @@ class RoutineRunnerService:
                 step_results=step_results,
                 blocked_steps=blocked_steps,
                 warning=warning,
+                routine_snapshot=routine,
             )
             self.routine_service.update(
                 routine_id,
@@ -90,6 +91,7 @@ class RoutineRunnerService:
                 step_results=step_results,
                 blocked_steps=blocked_steps,
                 warning=str(exc),
+                routine_snapshot=routine,
             )
             self.audit_service.log(
                 action_type="routine_run",
@@ -149,7 +151,7 @@ class RoutineRunnerService:
         if step["step_type"] == "agent":
             agent_run = self.agent_runner.run(
                 step["agent_id"],
-                owner_approved=owner_approved or bool(routine["trusted"]),
+                owner_approved=owner_approved,
             )
             return {
                 "index": index,
@@ -161,11 +163,14 @@ class RoutineRunnerService:
             }
 
         tool = self.tool_registry.get(step["tool_id"])
+        declared_tools = {str(tool_id) for tool_id in routine.get("tools", [])}
+        trusted_for_step = bool(routine["trusted"]) and step["tool_id"] in declared_tools
         decision = self.policy_service.authorize_tool(
             tier=tool.definition.tier,
             owner_approved=owner_approved,
-            trusted_routine=bool(routine["trusted"]),
+            trusted_routine=trusted_for_step,
             input_sources=["owner", "routines"],
+            tool_id=step["tool_id"],
         )
         if not decision.allowed:
             self.audit_service.log(
@@ -252,16 +257,19 @@ class RoutineRunnerService:
         step_results: list[dict[str, Any]],
         blocked_steps: list[dict[str, Any]],
         warning: str,
+        routine_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         run_id = self.db.make_id("routinrun")
         created_at = utc_now()
+        snapshot = self._routine_snapshot(routine_id, routine_snapshot)
         with self.db.connection() as conn:
             conn.execute(
                 """
                 INSERT INTO routine_runs (
                     id, routine_id, goal, reply, outcome, step_results_json,
-                    blocked_steps_json, warning, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    blocked_steps_json, warning, routine_version, routine_version_id,
+                    routine_snapshot_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -272,15 +280,63 @@ class RoutineRunnerService:
                     self.db.dumps(step_results),
                     self.db.dumps(blocked_steps),
                     warning,
+                    snapshot["version"],
+                    snapshot["version_id"],
+                    self.db.dumps(snapshot),
                     created_at,
                 ),
             )
-        return self.list_runs(routine_id, limit=1)[0]
+            row = conn.execute(
+                "SELECT * FROM routine_runs WHERE id = ?",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError(f"failed to load inserted routine run {run_id}")
+        return self._row_to_dict(row)
+
+    def _routine_snapshot(
+        self,
+        routine_id: str,
+        routine_snapshot: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        routine = routine_snapshot or self.routine_service.get(routine_id)
+        snapshot = {
+            key: routine[key]
+            for key in (
+                "id",
+                "version",
+                "version_id",
+                "name",
+                "goal",
+                "description",
+                "status",
+                "trigger_type",
+                "trusted",
+                "tools",
+                "steps",
+                "notes",
+            )
+            if key in routine
+        }
+        snapshot["version"] = int(snapshot.get("version") or 1)
+        snapshot["version_id"] = str(snapshot.get("version_id") or "")
+        return snapshot
 
     def _row_to_dict(self, row: Any) -> dict[str, Any]:
+        keys = row.keys()
+        snapshot_json = (
+            row["routine_snapshot_json"]
+            if "routine_snapshot_json" in keys and row["routine_snapshot_json"]
+            else "{}"
+        )
         return {
             "id": row["id"],
             "routine_id": row["routine_id"],
+            "routine_version": row["routine_version"] if "routine_version" in keys else None,
+            "routine_version_id": (
+                row["routine_version_id"] if "routine_version_id" in keys else None
+            ),
+            "routine_snapshot": self.db.loads(snapshot_json),
             "goal": row["goal"],
             "reply": row["reply"],
             "outcome": row["outcome"],

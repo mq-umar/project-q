@@ -3555,6 +3555,8 @@ class ProjectQApplicationTests(unittest.TestCase):
         eval_script = (job_dir / "evaluate_adapter.py").read_text(encoding="utf-8")
         self.assertIn("TOOL_IDS", eval_script)
         self.assertIn("apply_chat_template", eval_script)
+        self.assertIn("base_metrics", eval_script)
+        self.assertIn("adapter_metrics", eval_script)
         config = json.loads((job_dir / "config.json").read_text(encoding="utf-8"))
         self.assertIn("python_executable", config)
         self.assertIn("training_env_dir", config)
@@ -5308,6 +5310,23 @@ class ProjectQApplicationTests(unittest.TestCase):
         self.assertFalse(_is_allowed_origin_header("https://evil.example", "127.0.0.1"))
         self.assertTrue(_is_allowed_origin_header("http://localhost:8787", "127.0.0.1"))
 
+    def test_dashboard_static_get_only_mints_owner_session_for_loopback_host(self) -> None:
+        self.app.config.host = "0.0.0.0"
+        server, base_url = self._start_test_server()
+        try:
+            request = urllib.request.Request(
+                f"{base_url}/",
+                headers={"Host": f"192.168.1.50:{server.server_port}"},
+            )
+
+            response = urllib.request.urlopen(request, timeout=10)
+
+            self.assertEqual(response.status, 200)
+            self.assertIsNone(response.headers.get("Set-Cookie"))
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_local_mutating_api_requires_owner_session_cookie(self) -> None:
         server, base_url = self._start_test_server()
         try:
@@ -5594,6 +5613,45 @@ class ProjectQApplicationTests(unittest.TestCase):
 
         self.app.control.resume(reason="clear test emergency", source="dashboard")
         self.assertEqual(self.app.audit.list_recent(limit=1)[0]["action_type"], "kill_switch_resume")
+
+    def test_kill_switch_waits_for_in_flight_learning_cycle_before_audit_event(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        external_logged = threading.Event()
+
+        def slow_diagnostics_run(source: str = "learning_lab") -> dict[str, object]:
+            entered.set()
+            release.wait(timeout=10)
+            self.app.audit.log(
+                action_type="external_content_scan",
+                action_tier=1,
+                tool_name="security.scan_external_content",
+                outcome="completed",
+                metadata={"source": source},
+            )
+            external_logged.set()
+            return {
+                "id": "diag_slow_shutdown",
+                "summary": "slow diagnostics completed",
+                "status": "completed",
+                "repair": {},
+            }
+
+        self.app.learning.diagnostics_service.run = slow_diagnostics_run
+        self.app.learning.start(max_cycles=1, interval_seconds=60)
+        self.assertTrue(entered.wait(timeout=5))
+        release_timer = threading.Timer(2.2, release.set)
+        release_timer.start()
+        try:
+            self.app.control.activate(reason="stop slow learning", source="dashboard")
+            self.assertTrue(external_logged.wait(timeout=5))
+            events = self.app.audit.list_recent(limit=5)
+            self.assertEqual(events[0]["action_type"], "kill_switch_activate")
+            self.assertEqual(events[0]["metadata"]["source"], "dashboard")
+        finally:
+            release.set()
+            release_timer.cancel()
+            self.app.learning.stop()
 
     def test_companion_pairing_completes_once_and_authenticates_requests(self) -> None:
         pairing = self.app.companion.start_pairing(device_name="Umar iPhone", platform="ios")

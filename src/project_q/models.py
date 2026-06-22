@@ -77,6 +77,11 @@ class AgentCreate(BaseModel):
     memory_scope: str = "task-local"
     time_budget_minutes: int = Field(default=30, ge=1, le=1440)
     notes: str = ""
+    parent_agent_id: str | None = None
+    budget: dict[str, Any] = Field(default_factory=dict)
+    success_contract: dict[str, Any] = Field(default_factory=dict)
+    definition_id: str | None = None
+    definition_version: int | None = Field(default=None, ge=1)
 
 
 class AgentUpdate(BaseModel):
@@ -88,6 +93,9 @@ class AgentUpdate(BaseModel):
     memory_scope: str | None = None
     time_budget_minutes: int | None = Field(default=None, ge=1, le=1440)
     notes: str | None = None
+    parent_agent_id: str | None = None
+    budget: dict[str, Any] | None = None
+    success_contract: dict[str, Any] | None = None
 
 
 class RoutineStepDefinition(BaseModel):
@@ -163,7 +171,7 @@ class RoutineUpdate(BaseModel):
 class SettingsUpdate(BaseModel):
     owner_name: str | None = None
     aggression_level: str | None = None
-    auto_approve_tier: int | None = Field(default=None, ge=0, le=3)
+    auto_approve_tier: int | None = Field(default=None, ge=0, le=2)
     memory_mode: str | None = None  # ephemeral | standard | aggressive
     voice_enabled: bool | None = None
     sync_enabled: bool | None = None
@@ -191,10 +199,12 @@ class SettingsUpdate(BaseModel):
     kill_switch_activated_at: str | None = None
     kill_switch_source: str | None = None
     # §12.1 Behavior Profiles
+    approval_policy: Literal["always_ask", "ask_on_risky", "trusted_routines_only"] | None = None
     proactive_mode: str | None = None
     screen_context: str | None = None
     network_policy: str | None = None
     execution_environment: Literal["sandbox_first", "direct_trusted"] | None = None
+    voice_mode: Literal["always_on", "push_to_talk", "text_only"] | None = None
     # §12.2 Integrations & Retention
     outlook_enabled: bool | None = None
     scheduler_enabled: bool | None = None
@@ -318,6 +328,11 @@ class AgentRunRequest(BaseModel):
 
 class RoutineRunRequest(BaseModel):
     owner_approved: bool = False
+
+
+class RoutineRollbackRequest(BaseModel):
+    version: int = Field(ge=1)
+    owner_confirmed: bool = False
 
 
 class ToolExecutionRequest(BaseModel):

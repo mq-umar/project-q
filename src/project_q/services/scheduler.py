@@ -119,7 +119,7 @@ class RoutineSchedulerService:
 
         for routine in due:
             try:
-                self._routine_runner.run(routine["id"], owner_approved=True)
+                self._routine_runner.run(routine["id"], owner_approved=False)
             except Exception:  # noqa: BLE001
                 pass  # isolate failures per-routine
 

@@ -61,6 +61,9 @@
           <a class="nav-link" href="#section-templates" data-section="templates">
             <span class="ni">⊞</span><span>Agent Templates</span>
           </a>
+          <a class="nav-link" href="#section-workflows" data-section="workflows">
+            <span class="ni">W</span><span>Workflows</span>
+          </a>
           <a class="nav-link" href="#section-routines" data-section="routines">
             <span class="ni">↺</span><span>Routines</span>
           </a>
@@ -309,6 +312,60 @@
               <div id="templateList" class="template-grid"></div>
             </section>
 
+            <section class="card full-card" id="section-workflows" data-nav-id="workflows">
+              <div class="card-header">
+                <div>
+                  <p class="card-label">Agent Orchestration</p>
+                  <h2>Workflows</h2>
+                </div>
+                <button type="button" id="workflowRefreshButton" class="secondary-button btn-sm">Refresh</button>
+              </div>
+              <div class="workflow-layout">
+                <form id="workflowForm" class="workflow-editor">
+                  <label class="field-label">
+                    <span>Name</span>
+                    <input id="workflowName" maxlength="200" placeholder="Release verification" required />
+                  </label>
+                  <label class="field-label">
+                    <span>Description</span>
+                    <input id="workflowDescription" maxlength="4000" placeholder="Coordinate coding, testing, and final checks" />
+                  </label>
+                  <label class="field-label">
+                    <span>Parallel workers</span>
+                    <input id="workflowParallelism" type="number" min="1" max="8" value="2" required />
+                  </label>
+                  <label class="field-label">
+                    <span>Nodes</span>
+                    <textarea id="workflowNodes" rows="15" spellcheck="false" aria-describedby="workflowNodeHelp"></textarea>
+                  </label>
+                  <p id="workflowNodeHelp" class="helper-copy">
+                    Each node uses kind agent, tool, or delay with optional dependencies.
+                  </p>
+                  <label class="checkbox-row">
+                    <input id="workflowOwnerApproved" type="checkbox" />
+                    Owner-approve workflow runs from this panel
+                  </label>
+                  <div class="form-actions">
+                    <button type="submit">Save Workflow</button>
+                    <button type="button" id="workflowResetButton" class="secondary-button">Reset</button>
+                  </div>
+                </form>
+                <div class="workflow-board">
+                  <div>
+                    <h3 class="workflow-subhead">Definitions</h3>
+                    <div id="workflowList" class="stack-list workflow-definition-list"></div>
+                  </div>
+                  <div>
+                    <h3 class="workflow-subhead">Recent Runs</h3>
+                    <div id="workflowRunList" class="workflow-run-grid"></div>
+                  </div>
+                  <div id="workflowRunDetail" class="workflow-run-detail" aria-live="polite">
+                    Select a run to inspect node results and events.
+                  </div>
+                </div>
+              </div>
+            </section>
+
             <!-- ── Dispatches ── half -->
             <section class="card" id="section-dispatches" data-nav-id="dispatches">
               <div class="card-header">
@@ -434,6 +491,8 @@
                 <button id="trainingExportButton" type="button">Export Training Assets</button>
                 <button id="trainingPrepareLoraButton" type="button" class="secondary-button">Prepare LoRA Job</button>
               </div>
+              <div id="trainingJobList" class="stack-list compact-list training-job-list" aria-live="polite"></div>
+              <pre id="trainingJobDetail" class="result-box training-job-detail">Select Audit on a job to inspect artifacts, training progress, and prompt leakage.</pre>
             </section>
 
             <!-- ── Vault ── half -->
@@ -574,6 +633,22 @@
                         <option value="local_only">Local Only</option>
                         <option value="selected_services">Selected Services</option>
                         <option value="open_web">Open Web</option>
+                      </select>
+                    </label>
+                    <label class="field-label">
+                      <span>Approval Policy</span>
+                      <select id="approvalPolicy">
+                        <option value="always_ask">Always Ask</option>
+                        <option value="ask_on_risky">Ask on Risky</option>
+                        <option value="trusted_routines_only">Trusted Routines Only</option>
+                      </select>
+                    </label>
+                    <label class="field-label">
+                      <span>Voice Mode</span>
+                      <select id="voiceMode">
+                        <option value="always_on">Always On</option>
+                        <option value="push_to_talk">Push-to-Talk</option>
+                        <option value="text_only">Text Only</option>
                       </select>
                     </label>
                     <label class="field-label span-2">

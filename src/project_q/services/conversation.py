@@ -126,6 +126,7 @@ class ConversationService:
         )
 
     def list_messages(self, limit: int = 100) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 500))
         with self.db.connection() as conn:
             rows = conn.execute(
                 """

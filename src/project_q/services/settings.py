@@ -37,10 +37,12 @@ DEFAULT_SETTINGS = {
     "kill_switch_activated_at": "",
     "kill_switch_source": "",
     # §12.1 Behavior Profiles
+    "approval_policy": "ask_on_risky",
     "proactive_mode": "active",
     "screen_context": "manual",
     "network_policy": "selected_services",
     "execution_environment": "sandbox_first",
+    "voice_mode": "push_to_talk",
     # Retention & scheduler
     "memory_retention_days": 90,
     "git_workspace": "",

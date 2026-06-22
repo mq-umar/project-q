@@ -25,6 +25,11 @@ class OwnerAuthService:
             .isoformat()
             .replace("+00:00", "Z")
         )
+        gc_cutoff = (
+            (datetime.now(UTC).replace(microsecond=0) - timedelta(days=7))
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
         with self.db.connection() as conn:
             conn.execute(
                 """
@@ -33,6 +38,15 @@ class OwnerAuthService:
                 ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (session_id, self._hash_token(token), str(source or "dashboard")[:80], now, expires_at, now),
+            )
+            # Garbage-collect long-dead sessions (expired/revoked over 7 days ago).
+            conn.execute(
+                """
+                DELETE FROM owner_sessions
+                WHERE created_at < ?
+                  AND (revoked_at IS NOT NULL OR expires_at < ?)
+                """,
+                (gc_cutoff, now),
             )
         self.audit_service.log(
             action_type="owner_session_create",
@@ -80,6 +94,86 @@ class OwnerAuthService:
                 "UPDATE owner_sessions SET revoked_at = ? WHERE token_hash = ?",
                 (utc_now(), token_hash),
             )
+
+    def revoke_all_sessions(self, *, source: str = "kill_switch") -> int:
+        now = utc_now()
+        with self.db.connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE owner_sessions
+                SET revoked_at = ?
+                WHERE revoked_at IS NULL
+                """,
+                (now,),
+            )
+        revoked = int(cursor.rowcount if cursor.rowcount is not None else 0)
+        self.audit_service.log(
+            action_type="owner_sessions_revoke_all",
+            action_tier=2,
+            tool_name="owner_auth",
+            outcome="completed",
+            approved_by_owner=True,
+            input_sources=[source],
+            metadata={"revoked_count": revoked, "revoked_at": now},
+        )
+        return revoked
+
+    def passphrase_required(self) -> bool:
+        """True when the owner has configured an optional login passphrase."""
+        return self._passphrase_row() is not None
+
+    def set_passphrase(self, passphrase: str) -> None:
+        clean = str(passphrase or "")
+        if len(clean) < 6:
+            raise ValueError("owner passphrase must be at least 6 characters")
+        salt = secrets.token_bytes(16)
+        iterations = 200_000
+        digest = hashlib.pbkdf2_hmac("sha256", clean.encode("utf-8"), salt, iterations)
+        with self.db.connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS owner_passphrase (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    salt TEXT NOT NULL, hash TEXT NOT NULL,
+                    iterations INTEGER NOT NULL, updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO owner_passphrase (id, salt, hash, iterations, updated_at)
+                VALUES (1, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    salt = excluded.salt, hash = excluded.hash,
+                    iterations = excluded.iterations, updated_at = excluded.updated_at
+                """,
+                (salt.hex(), digest.hex(), iterations, utc_now()),
+            )
+
+    def clear_passphrase(self) -> None:
+        with self.db.connection() as conn:
+            conn.execute("DROP TABLE IF EXISTS owner_passphrase")
+
+    def verify_passphrase(self, passphrase: str) -> bool:
+        row = self._passphrase_row()
+        if row is None:
+            return False
+        digest = hashlib.pbkdf2_hmac(
+            "sha256",
+            str(passphrase or "").encode("utf-8"),
+            bytes.fromhex(row["salt"]),
+            int(row["iterations"]),
+        )
+        return hmac.compare_digest(digest.hex(), str(row["hash"]))
+
+    def _passphrase_row(self):
+        try:
+            with self.db.connection() as conn:
+                return conn.execute(
+                    "SELECT salt, hash, iterations FROM owner_passphrase WHERE id = 1"
+                ).fetchone()
+        except Exception:  # noqa: BLE001  (table absent until a passphrase is set)
+            return None
 
     @staticmethod
     def _hash_token(token: str) -> str:

@@ -1,20 +1,453 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import re
 import sys
 from pathlib import Path
 from typing import Any
 
-from project_q.models import MemoryCreate, utc_now
+from project_q.models import MemoryCreate, SettingsUpdate, utc_now
+from project_q.services.training_evaluation import (
+    AdapterEvaluationResult,
+    BaseEvaluationResult,
+    EvaluationReport,
+    PromotionGateConfig,
+    canonicalize_prompt,
+    compare_evaluation_results,
+    detect_prompt_leakage,
+    deterministic_disjoint_split,
+    evaluate_promotion,
+)
+
+
+MINIMUM_PROMOTION_SCORE = 0.85
 
 
 class TrainingService:
-    def __init__(self, db, memory_service, task_service, audit_service, data_root: Path) -> None:
+    def __init__(
+        self,
+        db,
+        memory_service,
+        task_service,
+        audit_service,
+        data_root: Path,
+        settings_service=None,
+    ) -> None:
         self.db = db
         self.memory_service = memory_service
         self.task_service = task_service
         self.audit_service = audit_service
         self.data_root = data_root
+        self.settings_service = settings_service
+        self.training_root = self.data_root / "training"
+        self.jobs_root = self.training_root / "jobs"
+        self.active_adapter_path = self.training_root / "active_adapter.json"
+        self.jobs_root.mkdir(parents=True, exist_ok=True)
+        self._ensure_lifecycle_schema()
+
+    def _ensure_lifecycle_schema(self) -> None:
+        with self.db.connection() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS training_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    job_dir TEXT NOT NULL,
+                    base_model TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL,
+                    artifact_valid INTEGER NOT NULL DEFAULT 0,
+                    promoted INTEGER NOT NULL DEFAULT 0,
+                    latest_evaluation_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS training_evaluations (
+                    id TEXT PRIMARY KEY,
+                    job_id TEXT NOT NULL,
+                    report_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY(job_id) REFERENCES training_jobs(job_id)
+                );
+                """
+            )
+
+    def list_lora_jobs(self) -> list[dict[str, Any]]:
+        jobs: list[dict[str, Any]] = []
+        for path in sorted(self.jobs_root.iterdir(), reverse=True):
+            if not path.is_dir() or not re.fullmatch(r"lora_job_[A-Za-z0-9_-]+", path.name):
+                continue
+            jobs.append(self._sync_lora_job(path.name))
+        return sorted(jobs, key=lambda item: item["created_at"], reverse=True)
+
+    def get_lora_job(self, job_id: str) -> dict[str, Any]:
+        self._job_dir(job_id, must_exist=True)
+        return self._sync_lora_job(job_id)
+
+    def audit_lora_job(self, job_id: str) -> dict[str, Any]:
+        job_dir = self._job_dir(job_id, must_exist=True)
+        config_path = job_dir / "config.json"
+        errors: list[str] = []
+        config: dict[str, Any] = {}
+        if not config_path.exists():
+            errors.append("missing config.json")
+        else:
+            try:
+                config = json.loads(config_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                errors.append(f"invalid config.json: {exc}")
+
+        adapter_dir = None
+        if config.get("output_adapter_dir"):
+            try:
+                adapter_dir = self._configured_job_path(job_dir, config["output_adapter_dir"])
+            except ValueError as exc:
+                errors.append(str(exc))
+        else:
+            errors.append("config is missing output_adapter_dir")
+
+        artifact_files: list[str] = []
+        if adapter_dir is not None:
+            required_config = adapter_dir / "adapter_config.json"
+            model_candidates = (
+                adapter_dir / "adapter_model.safetensors",
+                adapter_dir / "adapter_model.bin",
+            )
+            if not required_config.is_file():
+                errors.append("adapter_config.json is missing")
+            else:
+                try:
+                    json.loads(required_config.read_text(encoding="utf-8"))
+                    artifact_files.append(str(required_config))
+                except (OSError, json.JSONDecodeError) as exc:
+                    errors.append(f"adapter_config.json is invalid: {exc}")
+            model_path = next(
+                (path for path in model_candidates if path.is_file() and path.stat().st_size > 0),
+                None,
+            )
+            if model_path is None:
+                errors.append("adapter model weights are missing or empty")
+            else:
+                artifact_files.append(str(model_path))
+
+        training_prompts, dataset_errors = self._job_training_prompts(job_dir, config)
+        errors.extend(dataset_errors)
+        holdout_prompts, holdout_errors = self._job_holdout_prompts(job_dir, config)
+        errors.extend(holdout_errors)
+        leakage = detect_prompt_leakage(training_prompts, holdout_prompts)
+        trainer_state = self._trainer_state_summary(job_dir)
+        artifact_valid = not any(
+            message.startswith(
+                (
+                    "missing config",
+                    "invalid config",
+                    "configured path is outside",
+                    "config is missing output",
+                    "adapter_config",
+                    "adapter model",
+                )
+            )
+            for message in errors
+        )
+        result = {
+            "job_id": job_id,
+            "job_dir": str(job_dir),
+            "base_model": str(config.get("base_model", "")),
+            "artifact": {
+                "valid": artifact_valid,
+                "adapter_dir": str(adapter_dir) if adapter_dir else "",
+                "files": artifact_files,
+                "errors": errors,
+            },
+            "training_prompt_count": len(training_prompts),
+            "holdout_prompt_count": len(holdout_prompts),
+            "leakage": leakage.to_dict(),
+            "trainer_state": trainer_state,
+            "audited_at": utc_now(),
+        }
+        self._upsert_job(
+            job_id=job_id,
+            job_dir=job_dir,
+            base_model=str(config.get("base_model", "")),
+            status=self._job_status(job_id, artifact_valid=artifact_valid),
+            artifact_valid=artifact_valid,
+        )
+        return result
+
+    def record_lora_evaluation(
+        self,
+        job_id: str,
+        *,
+        base_metrics: dict[str, Any],
+        adapter_metrics: dict[str, Any],
+        holdout_prompts: list[str],
+        minimum_score: float = 0.85,
+        maximum_score_regression: float = 0.0,
+        maximum_latency_increase_ms: float | None = None,
+        maximum_failure_increase: int | None = None,
+        evaluator_source: str = "server_evaluator",
+        trusted_evaluator: bool = True,
+    ) -> dict[str, Any]:
+        job_dir = self._job_dir(job_id, must_exist=True)
+        if not holdout_prompts:
+            raise ValueError("at least one holdout prompt is required")
+        clean_holdouts = [str(prompt).strip() for prompt in holdout_prompts if str(prompt).strip()]
+        if len(clean_holdouts) != len(holdout_prompts):
+            raise ValueError("holdout prompts must be non-empty strings")
+
+        config = json.loads((job_dir / "config.json").read_text(encoding="utf-8"))
+        training_prompts, errors = self._job_training_prompts(job_dir, config)
+        if errors:
+            raise ValueError("; ".join(errors))
+        leakage = detect_prompt_leakage(training_prompts, clean_holdouts)
+        audit = self.audit_lora_job(job_id)
+        artifact_digest = self._artifact_digest(audit)
+        holdout_digest = self._holdout_digest(clean_holdouts)
+        base = BaseEvaluationResult(**base_metrics)
+        adapter = AdapterEvaluationResult(**adapter_metrics)
+        enforced_minimum_score = max(MINIMUM_PROMOTION_SCORE, float(minimum_score))
+        policy = PromotionGateConfig(
+            minimum_score=enforced_minimum_score,
+            maximum_score_regression=maximum_score_regression,
+            maximum_latency_increase_ms=maximum_latency_increase_ms,
+            maximum_failure_increase=maximum_failure_increase,
+        )
+        decision = evaluate_promotion(
+            base,
+            adapter,
+            artifact_valid=bool(audit["artifact"]["valid"]),
+            leakage=leakage,
+            config=policy,
+        )
+        report = EvaluationReport(
+            comparison=compare_evaluation_results(base, adapter),
+            leakage=leakage,
+            promotion=decision,
+            artifact_valid=bool(audit["artifact"]["valid"]),
+            metadata={
+                "job_id": job_id,
+                "base_model": config.get("base_model", ""),
+                "holdout_prompts": clean_holdouts,
+                "holdout_digest": holdout_digest,
+                "artifact_digest": artifact_digest,
+                "evaluator_source": str(evaluator_source or "server_evaluator")[:120],
+                "trusted_evaluator": bool(trusted_evaluator),
+                "created_at": utc_now(),
+            },
+        )
+        payload = report.to_dict()
+        report_path = job_dir / "evaluation_report.json"
+        self._write_json(report_path, payload)
+        created_at = utc_now()
+        self._upsert_job(
+            job_id=job_id,
+            job_dir=job_dir,
+            base_model=str(config.get("base_model", "")),
+            status="evaluation_passed" if decision.approved else "evaluation_failed",
+            artifact_valid=bool(audit["artifact"]["valid"]),
+            latest_evaluation=payload,
+        )
+        with self.db.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO training_evaluations (id, job_id, report_json, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    self.db.make_id("training_eval"),
+                    job_id,
+                    json.dumps(payload, ensure_ascii=True, sort_keys=True),
+                    created_at,
+                ),
+            )
+        self.audit_service.log(
+            action_type="training_evaluation",
+            action_tier=1,
+            tool_name="training.record_lora_evaluation",
+            outcome="passed" if decision.approved else "failed",
+            input_sources=[job_id, "clean_holdout"],
+            metadata={
+                "job_id": job_id,
+                "adapter_score": adapter.score,
+                "base_score": base.score,
+                "promotion_approved": decision.approved,
+                "report_path": str(report_path),
+            },
+        )
+        return payload
+
+    def promote_lora_job(self, job_id: str, *, owner_confirmed: bool) -> dict[str, Any]:
+        if not owner_confirmed:
+            raise PermissionError("owner confirmation is required to promote an adapter")
+        job_dir = self._job_dir(job_id, must_exist=True)
+        report_path = job_dir / "evaluation_report.json"
+        if not report_path.exists():
+            raise PermissionError("a persisted clean evaluation is required before promotion")
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        if not bool(report.get("promotion", {}).get("approved")):
+            raise PermissionError("this adapter did not pass the configured promotion gates")
+        metadata = report.get("metadata", {})
+        if not isinstance(metadata, dict) or not metadata.get("trusted_evaluator"):
+            raise PermissionError("a trusted server-side evaluation is required before promotion")
+        audit = self.audit_lora_job(job_id)
+        if not audit["artifact"]["valid"]:
+            raise PermissionError("adapter artifacts are not valid")
+        expected_artifact_digest = metadata.get("artifact_digest")
+        current_artifact_digest = self._artifact_digest(audit)
+        if expected_artifact_digest != current_artifact_digest:
+            raise PermissionError("adapter artifacts changed after evaluation")
+
+        previous = None
+        if self.active_adapter_path.exists():
+            previous = json.loads(self.active_adapter_path.read_text(encoding="utf-8"))
+        active = {
+            "job_id": job_id,
+            "adapter_dir": audit["artifact"]["adapter_dir"],
+            "base_model": audit["base_model"],
+            "promoted_at": utc_now(),
+        }
+        self._write_json(self.active_adapter_path, active)
+        # PRD: a promoted adapter must actually change inference. Switch the served
+        # Ollama model (graceful no-op until a GGUF artifact + ollama are present).
+        serving: dict[str, Any] = {"status": "skipped", "reason": "serving switch not attempted"}
+        try:
+            serving = self._activate_ollama_serving(job_id, job_dir)
+        except Exception as exc:  # noqa: BLE001
+            serving = {"status": "error", "reason": str(exc)[:300]}
+        active["serving"] = serving
+        self._write_json(self.active_adapter_path, active)
+        self._write_json(
+            job_dir / "promotion.json",
+            {"active": active, "previous": previous, "owner_confirmed": True},
+        )
+        self._upsert_job(
+            job_id=job_id,
+            job_dir=job_dir,
+            base_model=audit["base_model"],
+            status="promoted",
+            artifact_valid=True,
+            promoted=True,
+            latest_evaluation=report,
+        )
+        self.audit_service.log(
+            action_type="training_promotion",
+            action_tier=2,
+            tool_name="training.promote_lora_job",
+            approved_by_owner=True,
+            outcome="completed",
+            input_sources=[job_id, str(report_path)],
+            metadata=active,
+        )
+        return {"status": "promoted", **active, "rollback_available": True}
+
+    def rollback_lora_job(self, job_id: str, *, owner_confirmed: bool) -> dict[str, Any]:
+        if not owner_confirmed:
+            raise PermissionError("owner confirmation is required to roll back an adapter")
+        job_dir = self._job_dir(job_id, must_exist=True)
+        promotion_path = job_dir / "promotion.json"
+        if not promotion_path.exists():
+            raise ValueError("this job has no promotion to roll back")
+        active = (
+            json.loads(self.active_adapter_path.read_text(encoding="utf-8"))
+            if self.active_adapter_path.exists()
+            else {}
+        )
+        if active.get("job_id") != job_id:
+            raise ValueError("this adapter is not currently active")
+        promotion = json.loads(promotion_path.read_text(encoding="utf-8"))
+        previous = promotion.get("previous")
+        if previous:
+            self._write_json(self.active_adapter_path, previous)
+        else:
+            self.active_adapter_path.unlink(missing_ok=True)
+        rollback = {
+            "status": "rolled_back",
+            "job_id": job_id,
+            "restored_job_id": previous.get("job_id") if previous else None,
+            "rolled_back_at": utc_now(),
+        }
+        self._write_json(job_dir / "rollback.json", rollback)
+        job = self.get_lora_job(job_id)
+        self._upsert_job(
+            job_id=job_id,
+            job_dir=job_dir,
+            base_model=job["base_model"],
+            status="rolled_back",
+            artifact_valid=bool(job["artifact_valid"]),
+            promoted=False,
+            latest_evaluation=job.get("latest_evaluation", {}),
+        )
+        self.audit_service.log(
+            action_type="training_rollback",
+            action_tier=2,
+            tool_name="training.rollback_lora_job",
+            approved_by_owner=True,
+            outcome="completed",
+            input_sources=[job_id],
+            metadata=rollback,
+        )
+        return rollback
+
+    def _activate_ollama_serving(self, job_id: str, job_dir: Path) -> dict[str, Any]:
+        """Materialize and route to an Ollama model for a promoted adapter.
+
+        Degrades gracefully: a real served model needs a GGUF artifact (from the
+        offline merge + conversion step) and the ``ollama`` binary. When either is
+        absent the intent is recorded and inference routing is left unchanged.
+        """
+        import shutil
+        import subprocess
+
+        served_model = "project-q-" + "".join(
+            ch for ch in job_id.lower() if ch.isalnum() or ch in "_-"
+        )[:40]
+        gguf = next(iter(sorted(job_dir.glob("*.gguf"))), None)
+        if gguf is None:
+            return {
+                "status": "pending",
+                "served_model": served_model,
+                "reason": "no GGUF artifact in job dir; run merge_lora.py + GGUF conversion, then re-promote",
+            }
+        if shutil.which("ollama") is None:
+            return {
+                "status": "skipped",
+                "served_model": served_model,
+                "reason": "ollama executable not found on PATH",
+            }
+        modelfile = job_dir / "Modelfile"
+        modelfile.write_text(
+            f"FROM ./{gguf.name}\n\n"
+            "PARAMETER temperature 0.2\nPARAMETER top_p 0.9\nPARAMETER num_ctx 8192\n\n"
+            'SYSTEM "You are Project Q, a private Windows executive agent. Prefer audited '
+            'tools, route current owner intent before old memory, and be concise."\n',
+            encoding="utf-8",
+        )
+        try:
+            completed = subprocess.run(
+                ["ollama", "create", served_model, "-f", str(modelfile)],
+                cwd=str(job_dir),
+                capture_output=True,
+                text=True,
+                timeout=600,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {"status": "error", "served_model": served_model, "reason": str(exc)[:300]}
+        if completed.returncode != 0:
+            return {
+                "status": "error",
+                "served_model": served_model,
+                "reason": (completed.stderr or completed.stdout or "ollama create failed").strip()[:300],
+            }
+        # Route inference to the freshly served fine-tuned model.
+        if self.settings_service is not None:
+            try:
+                self.settings_service.update(
+                    SettingsUpdate(model_name=served_model, ollama_general_model=served_model)
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return {"status": "active", "served_model": served_model}
 
     def capability_plan(self) -> dict[str, Any]:
         return {
@@ -95,9 +528,11 @@ class TrainingService:
         adapter_dir.parent.mkdir(parents=True, exist_ok=True)
 
         sft_copy = dataset_dir / "project_q_sft.jsonl"
+        validation_copy = dataset_dir / "project_q_sft_validation.jsonl"
         preference_copy = dataset_dir / "project_q_preferences.jsonl"
         eval_copy = dataset_dir / "project_q_routing_evals.jsonl"
         self._copy_text_file(Path(export["sft_dataset_path"]), sft_copy)
+        self._copy_text_file(Path(export["validation_dataset_path"]), validation_copy)
         self._copy_text_file(Path(export["preference_dataset_path"]), preference_copy)
         self._copy_text_file(Path(export["routing_eval_path"]), eval_copy)
 
@@ -105,6 +540,7 @@ class TrainingService:
             "job_id": job_id,
             "base_model": base_model.strip() or "Qwen/Qwen2.5-Coder-1.5B-Instruct",
             "sft_dataset_path": str(sft_copy),
+            "validation_dataset_path": str(validation_copy),
             "preference_dataset_path": str(preference_copy),
             "routing_eval_path": str(eval_copy),
             "output_adapter_dir": str(adapter_dir),
@@ -179,6 +615,13 @@ class TrainingService:
                 "created_memory_id": memory["id"],
             },
         )
+        self._upsert_job(
+            job_id=job_id,
+            job_dir=job_dir,
+            base_model=config["base_model"],
+            status="prepared",
+            artifact_valid=False,
+        )
         return {
             "status": "ready",
             "job_id": job_id,
@@ -188,6 +631,7 @@ class TrainingService:
             "run_script_path": str(run_script_path),
             "readme_path": str(readme_path),
             "sft_dataset_path": str(sft_copy),
+            "validation_dataset_path": str(validation_copy),
             "preference_dataset_path": str(preference_copy),
             "routing_eval_path": str(eval_copy),
             "eval_prompts_path": str(eval_prompts_path),
@@ -211,6 +655,7 @@ class TrainingService:
         training_dir.mkdir(parents=True, exist_ok=True)
         exported_at = utc_now()
         sft_path = training_dir / "project_q_sft.jsonl"
+        validation_path = training_dir / "project_q_sft_validation.jsonl"
         preference_path = training_dir / "project_q_preferences.jsonl"
         eval_path = training_dir / "project_q_routing_evals.jsonl"
         lora_script_path = training_dir / "train_project_q_lora.py"
@@ -221,8 +666,27 @@ class TrainingService:
         sft_records.extend(self._synthetic_tool_router_records())
         preference_records = self._preference_records()
         eval_records = self._routing_eval_records()
+        holdout_keys = {
+            canonicalize_prompt(record["input"])
+            for record in eval_records
+        }
+        safe_sft_records = [
+            record
+            for record in sft_records
+            if canonicalize_prompt(self._training_record_prompt(record)) not in holdout_keys
+        ]
+        split = deterministic_disjoint_split(
+            safe_sft_records,
+            validation_fraction=0.1,
+            holdout_fraction=0.0,
+            seed="project-q-training-v1",
+            prompt_getter=self._training_record_prompt,
+        )
+        sft_records = list(split.train)
+        validation_records = list(split.validation)
 
         self._write_jsonl(sft_path, sft_records)
+        self._write_jsonl(validation_path, validation_records)
         self._write_jsonl(preference_path, preference_records)
         self._write_jsonl(eval_path, eval_records)
         lora_script_path.write_text(self._lora_script(), encoding="utf-8")
@@ -241,6 +705,7 @@ class TrainingService:
                 tags=["training_lab", "fine_tuning", "self_improvement"],
                 metadata={
                     "sft_dataset_path": str(sft_path),
+                    "validation_dataset_path": str(validation_path),
                     "preference_dataset_path": str(preference_path),
                     "routing_eval_path": str(eval_path),
                     "lora_script_path": str(lora_script_path),
@@ -255,6 +720,7 @@ class TrainingService:
             input_sources=["conversations", "audit", "tasks", reason],
             metadata={
                 "sft_record_count": len(sft_records),
+                "validation_record_count": len(validation_records),
                 "preference_record_count": len(preference_records),
                 "routing_eval_count": len(eval_records),
                 "memory_id": memory["id"],
@@ -264,11 +730,13 @@ class TrainingService:
             "status": "completed",
             "reason": reason,
             "sft_dataset_path": str(sft_path),
+            "validation_dataset_path": str(validation_path),
             "preference_dataset_path": str(preference_path),
             "routing_eval_path": str(eval_path),
             "lora_script_path": str(lora_script_path),
             "readme_path": str(readme_path),
             "sft_record_count": len(sft_records),
+            "validation_record_count": len(validation_records),
             "preference_record_count": len(preference_records),
             "routing_eval_count": len(eval_records),
             "created_memory_id": memory["id"],
@@ -278,6 +746,305 @@ class TrainingService:
             ),
             "exported_at": exported_at,
         }
+
+    def _sync_lora_job(self, job_id: str) -> dict[str, Any]:
+        audit = self.audit_lora_job(job_id)
+        status = self._job_status(job_id, artifact_valid=bool(audit["artifact"]["valid"]))
+        report_path = self._job_dir(job_id, must_exist=True) / "evaluation_report.json"
+        latest_evaluation = (
+            json.loads(report_path.read_text(encoding="utf-8"))
+            if report_path.exists()
+            else {}
+        )
+        self._upsert_job(
+            job_id=job_id,
+            job_dir=self._job_dir(job_id, must_exist=True),
+            base_model=audit["base_model"],
+            status=status,
+            artifact_valid=bool(audit["artifact"]["valid"]),
+            promoted=status == "promoted",
+            latest_evaluation=latest_evaluation,
+        )
+        with self.db.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM training_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        return {
+            "job_id": row["job_id"],
+            "job_dir": row["job_dir"],
+            "base_model": row["base_model"],
+            "status": row["status"],
+            "artifact_valid": bool(row["artifact_valid"]),
+            "promoted": bool(row["promoted"]),
+            "latest_evaluation": json.loads(row["latest_evaluation_json"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def _upsert_job(
+        self,
+        *,
+        job_id: str,
+        job_dir: Path,
+        base_model: str,
+        status: str,
+        artifact_valid: bool,
+        promoted: bool | None = None,
+        latest_evaluation: dict[str, Any] | None = None,
+    ) -> None:
+        now = utc_now()
+        with self.db.connection() as conn:
+            existing = conn.execute(
+                "SELECT created_at, promoted, latest_evaluation_json FROM training_jobs WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
+            created_at = existing["created_at"] if existing else now
+            promoted_value = (
+                int(promoted)
+                if promoted is not None
+                else int(existing["promoted"]) if existing else 0
+            )
+            evaluation_json = (
+                json.dumps(latest_evaluation, ensure_ascii=True, sort_keys=True)
+                if latest_evaluation is not None
+                else existing["latest_evaluation_json"] if existing else "{}"
+            )
+            conn.execute(
+                """
+                INSERT INTO training_jobs (
+                    job_id, job_dir, base_model, status, artifact_valid, promoted,
+                    latest_evaluation_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    job_dir = excluded.job_dir,
+                    base_model = excluded.base_model,
+                    status = excluded.status,
+                    artifact_valid = excluded.artifact_valid,
+                    promoted = excluded.promoted,
+                    latest_evaluation_json = excluded.latest_evaluation_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    job_id,
+                    str(job_dir),
+                    base_model,
+                    status,
+                    int(artifact_valid),
+                    promoted_value,
+                    evaluation_json,
+                    created_at,
+                    now,
+                ),
+            )
+
+    def _job_status(self, job_id: str, *, artifact_valid: bool) -> str:
+        active = {}
+        if self.active_adapter_path.exists():
+            try:
+                active = json.loads(self.active_adapter_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                active = {}
+        if active.get("job_id") == job_id:
+            return "promoted"
+        job_dir = self._job_dir(job_id, must_exist=True)
+        if (job_dir / "rollback.json").exists():
+            return "rolled_back"
+        report_path = job_dir / "evaluation_report.json"
+        if report_path.exists():
+            try:
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                return (
+                    "evaluation_passed"
+                    if report.get("promotion", {}).get("approved")
+                    else "evaluation_failed"
+                )
+            except (OSError, json.JSONDecodeError):
+                return "evaluation_failed"
+        return "trained" if artifact_valid else "prepared"
+
+    @staticmethod
+    def _artifact_digest(audit: dict[str, Any]) -> str:
+        files = [
+            Path(str(path))
+            for path in audit.get("artifact", {}).get("files", [])
+            if str(path).strip()
+        ]
+        if not files:
+            return ""
+        digest = hashlib.sha256()
+        for path in sorted(files, key=lambda item: str(item)):
+            digest.update(path.name.encode("utf-8"))
+            digest.update(b"\0")
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            digest.update(b"\0")
+        return digest.hexdigest()
+
+    @staticmethod
+    def _holdout_digest(prompts: list[str]) -> str:
+        digest = hashlib.sha256()
+        for prompt in prompts:
+            digest.update(canonicalize_prompt(prompt).encode("utf-8"))
+            digest.update(b"\0")
+        return digest.hexdigest()
+
+    def _job_dir(self, job_id: str, *, must_exist: bool) -> Path:
+        if not isinstance(job_id, str) or not re.fullmatch(r"lora_job_[A-Za-z0-9_-]+", job_id):
+            raise ValueError("invalid LoRA job id")
+        root = self.jobs_root.resolve()
+        path = (root / job_id).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("LoRA job path escapes the training jobs directory") from exc
+        if must_exist and not path.is_dir():
+            raise KeyError(job_id)
+        return path
+
+    @staticmethod
+    def _configured_job_path(job_dir: Path, configured_path: Any) -> Path:
+        candidate = Path(str(configured_path)).expanduser()
+        if not candidate.is_absolute():
+            candidate = job_dir / candidate
+        resolved_job_dir = job_dir.resolve()
+        resolved = candidate.resolve()
+        try:
+            resolved.relative_to(resolved_job_dir)
+        except ValueError as exc:
+            raise ValueError("configured path is outside the job directory") from exc
+        return resolved
+
+    def _job_training_prompts(
+        self,
+        job_dir: Path,
+        config: dict[str, Any],
+    ) -> tuple[list[str], list[str]]:
+        configured = config.get("sft_dataset_path")
+        if not configured:
+            return [], ["config is missing sft_dataset_path"]
+        try:
+            path = self._configured_job_path(job_dir, configured)
+        except ValueError as exc:
+            return [], [str(exc)]
+        records, errors = self._read_jsonl(path)
+        prompts: list[str] = []
+        for index, record in enumerate(records):
+            try:
+                prompts.append(self._training_record_prompt(record))
+            except (KeyError, TypeError, ValueError) as exc:
+                errors.append(f"invalid training record {index + 1}: {exc}")
+        return prompts, errors
+
+    def _job_holdout_prompts(
+        self,
+        job_dir: Path,
+        config: dict[str, Any],
+    ) -> tuple[list[str], list[str]]:
+        preferred = job_dir / "eval_prompts.jsonl"
+        try:
+            path = (
+                preferred
+                if preferred.exists()
+                else self._configured_job_path(job_dir, config.get("routing_eval_path", ""))
+            )
+        except ValueError as exc:
+            return [], [str(exc)]
+        records, errors = self._read_jsonl(path)
+        prompts: list[str] = []
+        for index, record in enumerate(records):
+            prompt = record.get("input") if isinstance(record, dict) else None
+            if not isinstance(prompt, str) or not prompt.strip():
+                errors.append(f"invalid holdout record {index + 1}")
+                continue
+            prompts.append(prompt.strip())
+        return prompts, errors
+
+    @staticmethod
+    def _read_jsonl(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
+        if not path.is_file():
+            return [], [f"missing dataset: {path.name}"]
+        if path.stat().st_size > 32 * 1024 * 1024:
+            return [], [f"dataset exceeds 32 MB safety limit: {path.name}"]
+        records: list[dict[str, Any]] = []
+        errors: list[str] = []
+        try:
+            for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    errors.append(f"invalid JSONL at {path.name}:{line_number}: {exc}")
+                    continue
+                if not isinstance(record, dict):
+                    errors.append(f"JSONL row must be an object at {path.name}:{line_number}")
+                    continue
+                records.append(record)
+        except OSError as exc:
+            errors.append(f"unable to read {path.name}: {exc}")
+        return records, errors
+
+    @staticmethod
+    def _training_record_prompt(record: dict[str, Any]) -> str:
+        messages = record.get("messages")
+        if not isinstance(messages, list):
+            raise ValueError("messages must be a list")
+        content = next(
+            (
+                item.get("content")
+                for item in messages
+                if isinstance(item, dict) and item.get("role") == "user"
+            ),
+            None,
+        )
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("record is missing a user prompt")
+        prompt = content
+        if "Owner request:" in prompt:
+            prompt = prompt.split("Owner request:", 1)[1]
+        if "\nTool id:" in prompt:
+            prompt = prompt.split("\nTool id:", 1)[0]
+        return prompt.strip()
+
+    @staticmethod
+    def _trainer_state_summary(job_dir: Path) -> dict[str, Any]:
+        candidates = sorted(job_dir.rglob("trainer_state.json"))
+        if not candidates:
+            return {}
+        path = candidates[-1]
+        if path.stat().st_size > 8 * 1024 * 1024:
+            return {"path": str(path), "error": "trainer state exceeds 8 MB safety limit"}
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return {"path": str(path), "error": str(exc)}
+        history = state.get("log_history", [])
+        losses = [
+            float(item["loss"])
+            for item in history
+            if isinstance(item, dict) and isinstance(item.get("loss"), (int, float))
+        ]
+        return {
+            "path": str(path),
+            "global_step": state.get("global_step"),
+            "epoch": state.get("epoch"),
+            "first_loss": losses[0] if losses else None,
+            "last_loss": losses[-1] if losses else None,
+        }
+
+    @staticmethod
+    def _write_json(path: Path, payload: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
 
     def _conversation_sft_records(self, max_records: int) -> list[dict[str, Any]]:
         with self.db.connection() as conn:
@@ -569,6 +1336,66 @@ class TrainingService:
                 "expected_tool": "training.prepare_lora_job",
                 "must_not_include": "export only",
             },
+            {
+                "input": "Locate the newest quarterly budget workbook in my documents.",
+                "expected_tool": "filesystem.resolve_file_request",
+                "must_not_include": "",
+            },
+            {
+                "input": "Open the second result from that document search.",
+                "expected_tool": "filesystem.open_file_choice",
+                "must_not_include": "",
+            },
+            {
+                "input": "Compare mean order value by region in orders.xlsx.",
+                "expected_tool": "spreadsheet.analyze",
+                "must_not_include": "",
+            },
+            {
+                "input": "Write a new Summary tab with regional totals in orders.xlsx.",
+                "expected_tool": "spreadsheet.write_analysis",
+                "must_not_include": "",
+            },
+            {
+                "input": "Build a polished multi-page website for Northstar Dental with appointments.",
+                "expected_tool": "code.generate_website",
+                "must_not_include": "",
+            },
+            {
+                "input": "Generate a Python CLI that renames photos by capture date.",
+                "expected_tool": "code.generate_project",
+                "must_not_include": "",
+            },
+            {
+                "input": "Research three reliable guides for installing a monitor arm and open the best one.",
+                "expected_tool": "browser.complete_goal",
+                "must_not_include": "",
+            },
+            {
+                "input": "Open https://docs.python.org in my browser.",
+                "expected_tool": "windows.open_url",
+                "must_not_include": "",
+            },
+            {
+                "input": "Prepare a local LoRA training package but do not start training.",
+                "expected_tool": "training.prepare_lora_job",
+                "must_not_include": "",
+            },
+            {
+                "input": "Outline the milestones needed for Project Q to reach stronger coding quality.",
+                "expected_tool": "training.capability_plan",
+                "must_not_include": "",
+            },
+            {
+                "input": "Run Project Q's health checks and identify failures.",
+                "expected_tool": "diagnostics.run_self_check",
+                "must_not_include": "",
+            },
+            {
+                "input": "Explain how photosynthesis stores solar energy.",
+                "expected_tool": "knowledge.answer",
+                "must_not_include": "",
+            },
         ]
 
     @staticmethod
@@ -852,120 +1679,8 @@ if __name__ == "__main__":
 
     @staticmethod
     def _adapter_eval_script() -> str:
-        return '''"""
-Evaluate a Project Q LoRA adapter against routing evals.
-
-Default mode validates eval data only. Add --run-model to load the base model plus adapter and score generated text.
-"""
-
-from __future__ import annotations
-
-import argparse
-import json
-from pathlib import Path
-
-
-def load_jsonl(path: Path) -> list[dict]:
-    rows = []
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            text = line.strip()
-            if text:
-                rows.append(json.loads(text))
-    return rows
-
-
-TOOL_IDS = [
-    "browser.complete_goal",
-    "code.generate_project",
-    "code.generate_website",
-    "diagnostics.run_self_check",
-    "filesystem.open_file_choice",
-    "filesystem.resolve_file_request",
-    "knowledge.answer",
-    "spreadsheet.analyze",
-    "spreadsheet.write_analysis",
-    "training.capability_plan",
-    "training.prepare_lora_job",
-    "windows.open_url",
-]
-
-
-def score_text(text: str, expected_tool: str, must_not_include: str) -> dict:
-    lowered = text.lower()
-    expected = expected_tool.lower()
-    forbidden = must_not_include.lower()
-    return {
-        "passed": expected in lowered and (not forbidden or forbidden not in lowered),
-        "expected_tool_found": expected in lowered,
-        "forbidden_found": bool(forbidden and forbidden in lowered),
-    }
-
-
-def build_prompt(tokenizer, owner_request: str) -> str:
-    system = "You are the Project Q tool router. Return exactly one Project Q tool id and no explanation."
-    user = (
-        "Return exactly one tool id from this list and no explanation:\\n"
-        + "\\n".join(TOOL_IDS)
-        + f"\\nOwner request: {owner_request}\\nTool id:"
-    )
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ]
-    if hasattr(tokenizer, "apply_chat_template"):
-        return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    return system + "\\n" + user + "\\nassistant:"
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="config.json")
-    parser.add_argument("--run-model", action="store_true")
-    parser.add_argument("--max-new-tokens", type=int, default=180)
-    args = parser.parse_args()
-    config = json.loads(Path(args.config).read_text(encoding="utf-8"))
-    evals = load_jsonl(Path(config["routing_eval_path"]))
-    if not args.run_model:
-        print(f"Validated {len(evals)} routing eval prompt(s). Re-run with --run-model to score adapter output.")
-        return
-
-    try:
-        import torch
-        from peft import PeftModel
-        from transformers import AutoModelForCausalLM, AutoTokenizer
-    except ImportError as exc:
-        raise SystemExit("Install torch, transformers, and peft before model eval.") from exc
-
-    tokenizer = AutoTokenizer.from_pretrained(config["base_model"], trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        config["base_model"],
-        trust_remote_code=True,
-        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-        device_map="auto" if torch.cuda.is_available() else None,
-    )
-    model = PeftModel.from_pretrained(model, config["output_adapter_dir"])
-    passed = 0
-    for item in evals:
-        prompt = build_prompt(tokenizer, item["input"])
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
-        output = model.generate(
-            **inputs,
-            max_new_tokens=args.max_new_tokens,
-            do_sample=False,
-            pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
-        )
-        generated = output[0][inputs["input_ids"].shape[-1]:]
-        text = tokenizer.decode(generated, skip_special_tokens=True).strip()
-        score = score_text(text, item["expected_tool"], item.get("must_not_include", ""))
-        passed += int(score["passed"])
-        print(json.dumps({"input": item["input"], "score": score, "text": text[-500:]}, ensure_ascii=True))
-    print(f"Passed {passed}/{len(evals)} routing evals.")
-
-
-if __name__ == "__main__":
-    main()
-'''
+        evaluator_path = Path(__file__).resolve().parents[1] / "lora_evaluator.py"
+        return evaluator_path.read_text(encoding="utf-8")
 
     @staticmethod
     def _merge_lora_script() -> str:

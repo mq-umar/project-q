@@ -14,6 +14,7 @@ class ContextService:
         settings_service,
         tool_registry,
         workspace_root,
+        trust_service=None,
     ) -> None:
         self.db = db
         self.memory_service = memory_service
@@ -23,6 +24,7 @@ class ContextService:
         self.settings_service = settings_service
         self.tool_registry = tool_registry
         self.workspace_root = workspace_root
+        self.trust_service = trust_service
 
     def build(self, latest_message: str) -> dict[str, Any]:
         settings = self.settings_service.get_all()
@@ -60,10 +62,22 @@ class ContextService:
                     ocr_tool = self.tool_registry.get("windows.ocr_screenshot")
                     ocr_result = ocr_tool.execute({"image_path": shot_path})
                     ocr_text = ocr_result.get("text", "")
+                # On-screen OCR is Zone 3 external content: scan + label it so the
+                # reasoner treats it as untrusted data, never as owner instructions.
+                if self.trust_service is not None and ocr_text:
+                    scan = self.trust_service.scan_external_content(
+                        content=ocr_text,
+                        source_type="screen_ocr",
+                        origin_identifier=shot_path or "screen",
+                    )
+                    ocr_payload = scan["safe_summary_context"]
+                else:
+                    ocr_payload = ocr_text[:4000]
                 ctx["screen_context"] = {
                     "enabled": True,
                     "screenshot_path": shot_path,
-                    "ocr_text": ocr_text[:4000],
+                    "ocr_text": ocr_payload,
+                    "trust_zone": "zone_3_external",
                 }
             except Exception as exc:  # noqa: BLE001
                 ctx["screen_context"] = {"enabled": False, "error": str(exc)}

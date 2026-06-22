@@ -6,6 +6,7 @@ import ipaddress
 import json
 import mimetypes
 import re
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -41,6 +42,7 @@ from project_q.models import (
     MemoryCreate,
     MemoryUpdate,
     RoutineCreate,
+    RoutineRollbackRequest,
     RoutineRunRequest,
     RoutineUpdate,
     SecretUpsert,
@@ -50,6 +52,7 @@ from project_q.models import (
     ToolExecutionRequest,
     VoiceTranscriptRequest,
 )
+from project_q.services.workflow_service import WorkflowStateConflict
 
 
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
@@ -100,6 +103,16 @@ def _is_allowed_origin_header(origin_header: str, configured_host: str) -> bool:
     if not parsed.netloc:
         return False
     return _is_allowed_host_header(parsed.netloc, configured_host)
+
+
+def _is_loopback_host_header(host_header: str, configured_host: str) -> bool:
+    host = _host_name_from_header(host_header) or _host_name_from_header(configured_host)
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 class ProjectQHandler(BaseHTTPRequestHandler):
@@ -218,6 +231,9 @@ class ProjectQHandler(BaseHTTPRequestHandler):
             ("GET", r"^/api/control$", self._control_status),
             ("POST", r"^/api/control/kill-switch$", self._control_kill_switch),
             ("POST", r"^/api/control/resume$", self._control_resume),
+            ("GET", r"^/api/auth/status$", self._auth_status),
+            ("POST", r"^/api/auth/login$", self._auth_login),
+            ("POST", r"^/api/auth/passphrase$", self._auth_set_passphrase),
             ("GET", r"^/api/companion/devices$", self._companion_list_devices),
             ("POST", r"^/api/companion/pairing/start$", self._companion_pairing_start),
             ("POST", r"^/api/companion/pairing/complete$", self._companion_pairing_complete),
@@ -245,9 +261,31 @@ class ProjectQHandler(BaseHTTPRequestHandler):
             ("POST", r"^/api/agents/([^/]+)/run$", self._run_agent),
             ("PUT", r"^/api/agents/([^/]+)$", self._update_agent),
             ("DELETE", r"^/api/agents/([^/]+)$", self._delete_agent),
+            ("GET", r"^/api/workflows$", self._list_workflows),
+            ("POST", r"^/api/workflows$", self._create_workflow),
+            ("GET", r"^/api/workflows/([^/]+)/versions$", self._list_workflow_versions),
+            ("GET", r"^/api/workflows/([^/]+)/runs$", self._list_workflow_definition_runs),
+            ("POST", r"^/api/workflows/([^/]+)/runs$", self._start_workflow_run),
+            ("GET", r"^/api/workflows/([^/]+)$", self._get_workflow),
+            ("PUT", r"^/api/workflows/([^/]+)$", self._update_workflow),
+            ("DELETE", r"^/api/workflows/([^/]+)$", self._delete_workflow),
+            ("GET", r"^/api/workflow-runs$", self._list_workflow_runs),
+            ("GET", r"^/api/workflow-runs/([^/]+)/results$", self._workflow_run_results),
+            ("GET", r"^/api/workflow-runs/([^/]+)/events/stream$", self._workflow_event_stream),
+            ("GET", r"^/api/workflow-runs/([^/]+)/events$", self._workflow_run_events),
+            (
+                "POST",
+                r"^/api/workflow-runs/([^/]+)/nodes/([^/]+)/decision$",
+                self._decide_workflow_approval,
+            ),
+            ("POST", r"^/api/workflow-runs/([^/]+)/cancel$", self._cancel_workflow_run),
+            ("POST", r"^/api/workflow-runs/([^/]+)/retry$", self._retry_workflow_run),
+            ("GET", r"^/api/workflow-runs/([^/]+)$", self._get_workflow_run),
             ("GET", r"^/api/routines$", self._list_routines),
             ("POST", r"^/api/routines$", self._create_routine),
+            ("GET", r"^/api/routines/([^/]+)/versions$", self._list_routine_versions),
             ("GET", r"^/api/routines/([^/]+)/runs$", self._list_routine_runs),
+            ("POST", r"^/api/routines/([^/]+)/rollback$", self._rollback_routine),
             ("POST", r"^/api/routines/([^/]+)/run$", self._run_routine),
             ("PUT", r"^/api/routines/([^/]+)$", self._update_routine),
             ("DELETE", r"^/api/routines/([^/]+)$", self._delete_routine),
@@ -264,6 +302,12 @@ class ProjectQHandler(BaseHTTPRequestHandler):
             ("POST", r"^/api/diagnostics/run$", self._diagnostic_run),
             ("POST", r"^/api/diagnostics/auto-repair$", self._diagnostic_auto_repair),
             ("GET", r"^/api/dispatches$", self._list_dispatches),
+            ("GET", r"^/api/training/jobs$", self._training_list_jobs),
+            ("POST", r"^/api/training/jobs/([^/]+)/audit$", self._training_audit_job),
+            ("POST", r"^/api/training/jobs/([^/]+)/evaluation$", self._training_record_evaluation),
+            ("POST", r"^/api/training/jobs/([^/]+)/promote$", self._training_promote_job),
+            ("POST", r"^/api/training/jobs/([^/]+)/rollback$", self._training_rollback_job),
+            ("GET", r"^/api/training/jobs/([^/]+)$", self._training_get_job),
             ("POST", r"^/api/training/export$", self._training_export),
             ("POST", r"^/api/training/prepare-lora$", self._training_prepare_lora),
             ("GET", r"^/api/tools$", self._list_tools),
@@ -286,6 +330,11 @@ class ProjectQHandler(BaseHTTPRequestHandler):
             self._json_response({"error": f"Not found: {exc}"}, status=HTTPStatus.NOT_FOUND)
         except PermissionError as exc:
             self._json_response({"error": str(exc)}, status=HTTPStatus.FORBIDDEN)
+        except WorkflowStateConflict as exc:
+            self._json_response(
+                {"error": str(exc), "code": "workflow_state_conflict"},
+                status=HTTPStatus.CONFLICT,
+            )
         except ValueError as exc:
             self._json_response({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:  # noqa: BLE001
@@ -296,8 +345,9 @@ class ProjectQHandler(BaseHTTPRequestHandler):
                 outcome="failed",
                 error=str(exc),
             )
+            # Keep the detail in the audit log only; never leak internals to clients.
             self._json_response(
-                {"error": str(exc)},
+                {"error": "internal server error"},
                 status=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
 
@@ -429,6 +479,11 @@ class ProjectQHandler(BaseHTTPRequestHandler):
             self._json_response({"error": f"Not found: {exc}"}, status=HTTPStatus.NOT_FOUND)
         except PermissionError as exc:
             self._json_response({"error": str(exc)}, status=HTTPStatus.FORBIDDEN)
+        except WorkflowStateConflict as exc:
+            self._json_response(
+                {"error": str(exc), "code": "workflow_state_conflict"},
+                status=HTTPStatus.CONFLICT,
+            )
         except ValueError as exc:
             self._json_response({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:  # noqa: BLE001
@@ -440,7 +495,7 @@ class ProjectQHandler(BaseHTTPRequestHandler):
                 error=str(exc),
             )
             self._json_response(
-                {"error": str(exc)},
+                {"error": "internal server error"},
                 status=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
 
@@ -453,6 +508,8 @@ class ProjectQHandler(BaseHTTPRequestHandler):
                 "/api/memories",
                 "/api/tasks",
                 "/api/agents",
+                "/api/workflows",
+                "/api/workflow-runs",
                 "/api/routines",
                 "/api/settings",
                 "/api/tools",
@@ -461,6 +518,7 @@ class ProjectQHandler(BaseHTTPRequestHandler):
                 "/api/diagnostics",
                 "/api/learning",
                 "/api/provider",
+                "/api/training",
             )
             if path == "/api/agents/templates":
                 return False
@@ -476,6 +534,8 @@ class ProjectQHandler(BaseHTTPRequestHandler):
             return False
         if method == "POST" and path == "/api/companion/quick-capture":
             return False
+        if method == "POST" and path == "/api/auth/login":
+            return False
         return True
 
     def _owner_session_allowed(self) -> bool:
@@ -490,10 +550,59 @@ class ProjectQHandler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _has_valid_owner_session(self) -> bool:
+        token = self.headers.get("X-Project-Q-Owner-Session", "").strip() or self._cookie_value(
+            OWNER_SESSION_COOKIE
+        )
+        if not token:
+            return False
+        try:
+            self.app.owner_auth.verify_session(token)
+            return True
+        except PermissionError:
+            return False
+
+    def _auth_status(self, _body: dict[str, Any], _query: dict[str, Any]) -> None:
+        self._json_response(
+            {
+                "passphrase_required": self.app.owner_auth.passphrase_required(),
+                "authenticated": self._has_valid_owner_session(),
+            }
+        )
+
+    def _auth_login(self, body: dict[str, Any], _query: dict[str, Any]) -> None:
+        if not self._can_mint_owner_session_cookie():
+            self._json_response(
+                {"error": "login is only available on the local dashboard"},
+                status=HTTPStatus.FORBIDDEN,
+            )
+            return
+        if self.app.owner_auth.passphrase_required() and not self.app.owner_auth.verify_passphrase(
+            str(body.get("passphrase", ""))
+        ):
+            self._json_response({"error": "invalid owner passphrase"}, status=HTTPStatus.UNAUTHORIZED)
+            return
+        self._json_response(
+            {"status": "authenticated"},
+            headers={"Set-Cookie": self._owner_session_cookie_header()},
+        )
+
+    def _auth_set_passphrase(self, body: dict[str, Any], _query: dict[str, Any]) -> None:
+        if str(body.get("action", "set")) == "clear":
+            self.app.owner_auth.clear_passphrase()
+            self._json_response({"status": "cleared", "passphrase_required": False})
+            return
+        self.app.owner_auth.set_passphrase(str(body.get("passphrase", "")))
+        self._json_response({"status": "set", "passphrase_required": True})
+
     def _blocked_by_kill_switch(self, method: str, path: str) -> bool:
         if method not in {"POST", "PUT", "DELETE"}:
             return False
         if path in {"/api/control/kill-switch", "/api/control/resume"}:
+            return False
+        if method == "POST" and re.match(r"^/api/workflow-runs/[^/]+/cancel$", path):
+            return False
+        if method == "POST" and re.match(r"^/api/training/jobs/[^/]+/rollback$", path):
             return False
         if method == "DELETE" and re.match(r"^/api/companion/devices/[^/]+$", path):
             return False
@@ -1093,6 +1202,232 @@ class ProjectQHandler(BaseHTTPRequestHandler):
         self.app.agents.delete(args[0])
         self._json_response({"deleted": args[0]})
 
+    def _list_workflows(self, _args: tuple[str, ...], _body: dict[str, Any], query: dict[str, Any]) -> None:
+        limit = int(query.get("limit", ["200"])[0])
+        self._json_response({"items": self.app.workflows.list_definitions(limit=limit)})
+
+    def _create_workflow(self, _args: tuple[str, ...], body: dict[str, Any], _query: dict[str, Any]) -> None:
+        workflow = self.app.workflows.create_definition(body)
+        self.app.audit.log(
+            action_type="workflow_create",
+            action_tier=1,
+            tool_name="workflow_service",
+            outcome="completed",
+            approved_by_owner=True,
+            metadata={"workflow_id": workflow["id"], "version": workflow["version"]},
+        )
+        self._json_response(workflow, status=HTTPStatus.CREATED)
+
+    def _get_workflow(self, args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
+        self._json_response(self.app.workflows.get_definition(args[0]))
+
+    def _update_workflow(self, args: tuple[str, ...], body: dict[str, Any], _query: dict[str, Any]) -> None:
+        workflow = self.app.workflows.update_definition(args[0], body)
+        self.app.audit.log(
+            action_type="workflow_update",
+            action_tier=1,
+            tool_name="workflow_service",
+            outcome="completed",
+            approved_by_owner=True,
+            metadata={"workflow_id": workflow["id"], "version": workflow["version"]},
+        )
+        self._json_response(workflow)
+
+    def _delete_workflow(self, args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
+        self._json_response(self.app.workflows.delete_definition(args[0]))
+
+    def _list_workflow_versions(
+        self,
+        args: tuple[str, ...],
+        _body: dict[str, Any],
+        _query: dict[str, Any],
+    ) -> None:
+        self._json_response({"items": self.app.workflows.list_definition_versions(args[0])})
+
+    def _list_workflow_definition_runs(
+        self,
+        args: tuple[str, ...],
+        _body: dict[str, Any],
+        query: dict[str, Any],
+    ) -> None:
+        limit = int(query.get("limit", ["100"])[0])
+        self._json_response(
+            {"items": self.app.workflows.list_runs(workflow_id=args[0], limit=limit)}
+        )
+
+    def _start_workflow_run(
+        self,
+        args: tuple[str, ...],
+        body: dict[str, Any],
+        _query: dict[str, Any],
+    ) -> None:
+        run = self.app.workflow_orchestrator.submit(
+            args[0],
+            owner_approved=bool(body.get("owner_approved", False)),
+        )
+        self._json_response(run, status=HTTPStatus.ACCEPTED)
+
+    def _list_workflow_runs(
+        self,
+        _args: tuple[str, ...],
+        _body: dict[str, Any],
+        query: dict[str, Any],
+    ) -> None:
+        workflow_id = str(query.get("workflow_id", [""])[0]).strip() or None
+        status_values = tuple(
+            item.strip()
+            for item in str(query.get("status", [""])[0]).split(",")
+            if item.strip()
+        )
+        limit = int(query.get("limit", ["100"])[0])
+        self._json_response(
+            {
+                "items": self.app.workflows.list_runs(
+                    workflow_id=workflow_id,
+                    statuses=status_values or None,
+                    limit=limit,
+                )
+            }
+        )
+
+    def _get_workflow_run(
+        self,
+        args: tuple[str, ...],
+        _body: dict[str, Any],
+        _query: dict[str, Any],
+    ) -> None:
+        self._json_response(self.app.workflows.get_run(args[0]))
+
+    def _workflow_run_results(
+        self,
+        args: tuple[str, ...],
+        _body: dict[str, Any],
+        _query: dict[str, Any],
+    ) -> None:
+        run = self.app.workflows.get_run(args[0], include_events=False)
+        self._json_response(
+            {
+                "id": run["id"],
+                "workflow_id": run["workflow_id"],
+                "status": run["status"],
+                "result": run["result"],
+                "error": run["error"],
+                "nodes": run["nodes"],
+            }
+        )
+
+    def _workflow_run_events(
+        self,
+        args: tuple[str, ...],
+        _body: dict[str, Any],
+        query: dict[str, Any],
+    ) -> None:
+        after = int(query.get("after", ["0"])[0])
+        limit = int(query.get("limit", ["500"])[0])
+        self._json_response(
+            {
+                "items": self.app.workflows.list_events(
+                    args[0],
+                    after_sequence=after,
+                    limit=limit,
+                )
+            }
+        )
+
+    def _workflow_event_stream(
+        self,
+        args: tuple[str, ...],
+        _body: dict[str, Any],
+        query: dict[str, Any],
+    ) -> None:
+        run_id = args[0]
+        cursor = int(query.get("after", ["0"])[0])
+        self.app.workflows.get_run(run_id, include_events=False)
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        deadline = time.monotonic() + 25
+        try:
+            while time.monotonic() < deadline:
+                events = self.app.workflows.list_events(
+                    run_id,
+                    after_sequence=cursor,
+                    limit=200,
+                )
+                for event in events:
+                    cursor = int(event["sequence"])
+                    data = json.dumps(event, ensure_ascii=True)
+                    self.wfile.write(
+                        f"id: {cursor}\nevent: workflow\ndata: {data}\n\n".encode("utf-8")
+                    )
+                if events:
+                    self.wfile.flush()
+                run = self.app.workflows.get_run(run_id, include_events=False)
+                if run["status"] in {"completed", "failed", "cancelled"} and not events:
+                    break
+                if not events:
+                    self.wfile.write(b": heartbeat\n\n")
+                    self.wfile.flush()
+                time.sleep(0.5)
+        except OSError:
+            # Client disconnected mid-stream (incl. ConnectionAbortedError on
+            # Windows). Swallow it so it never re-enters the _route_api catch-all
+            # and writes a second HTTP response into the already-open stream.
+            return
+
+    def _cancel_workflow_run(
+        self,
+        args: tuple[str, ...],
+        body: dict[str, Any],
+        _query: dict[str, Any],
+    ) -> None:
+        run = self.app.workflow_orchestrator.cancel(
+            args[0],
+            reason=str(body.get("reason", "")).strip(),
+        )
+        self.app.workflow_orchestrator.run_once()
+        self._json_response(
+            self.app.workflows.get_run(run["id"], include_events=False),
+            status=HTTPStatus.ACCEPTED,
+        )
+
+    def _decide_workflow_approval(
+        self,
+        args: tuple[str, ...],
+        body: dict[str, Any],
+        _query: dict[str, Any],
+    ) -> None:
+        if not isinstance(body.get("approved"), bool):
+            raise ValueError("approved must be a boolean")
+        node = self.app.workflows.get_node_run(args[1])
+        if node["workflow_run_id"] != args[0]:
+            raise ValueError("approval node does not belong to this workflow run")
+        decided = self.app.workflows.decide_approval(
+            args[1],
+            approved=body["approved"],
+            note=str(body.get("note", "")),
+        )
+        self.app.workflow_orchestrator.run_once()
+        self._json_response(decided)
+
+    def _retry_workflow_run(
+        self,
+        args: tuple[str, ...],
+        body: dict[str, Any],
+        _query: dict[str, Any],
+    ) -> None:
+        run = self.app.workflow_orchestrator.retry(
+            args[0],
+            owner_approved=(
+                bool(body["owner_approved"])
+                if "owner_approved" in body
+                else None
+            ),
+        )
+        self._json_response(run, status=HTTPStatus.ACCEPTED)
+
     def _list_routines(self, _args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
         self._json_response({"items": self.app.routines.list_all()})
 
@@ -1111,9 +1446,33 @@ class ProjectQHandler(BaseHTTPRequestHandler):
     def _update_routine(self, args: tuple[str, ...], body: dict[str, Any], _query: dict[str, Any]) -> None:
         self._json_response(self.app.routines.update(args[0], RoutineUpdate.model_validate(body)))
 
+    def _list_routine_versions(self, args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
+        self._json_response({"items": self.app.routines.list_versions(args[0])})
+
     def _list_routine_runs(self, args: tuple[str, ...], _body: dict[str, Any], query: dict[str, Any]) -> None:
         limit = int(query.get("limit", ["20"])[0])
         self._json_response({"items": self.app.routine_runner.list_runs(args[0], limit=limit)})
+
+    def _rollback_routine(self, args: tuple[str, ...], body: dict[str, Any], _query: dict[str, Any]) -> None:
+        payload = RoutineRollbackRequest.model_validate(body)
+        routine = self.app.routines.rollback(
+            args[0],
+            version=payload.version,
+            owner_confirmed=payload.owner_confirmed,
+        )
+        self.app.audit.log(
+            action_type="routine_rollback",
+            action_tier=2,
+            tool_name="routine_service",
+            outcome="completed",
+            approved_by_owner=True,
+            metadata={
+                "routine_id": routine["id"],
+                "rolled_back_to_version": payload.version,
+                "new_version": routine["version"],
+            },
+        )
+        self._json_response(routine)
 
     def _run_routine(self, args: tuple[str, ...], body: dict[str, Any], _query: dict[str, Any]) -> None:
         payload = RoutineRunRequest.model_validate(body)
@@ -1169,6 +1528,67 @@ class ProjectQHandler(BaseHTTPRequestHandler):
     def _list_dispatches(self, _args: tuple[str, ...], _body: dict[str, Any], query: dict[str, Any]) -> None:
         limit = int(query.get("limit", ["20"])[0])
         self._json_response({"items": self.app.dispatches.list_all(limit=limit)})
+
+    def _training_list_jobs(self, _args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
+        self._json_response({"items": self.app.training.list_lora_jobs()})
+
+    def _training_get_job(self, args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
+        self._json_response(self.app.training.get_lora_job(args[0]))
+
+    def _training_audit_job(self, args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
+        self._json_response(self.app.training.audit_lora_job(args[0]))
+
+    def _training_record_evaluation(
+        self,
+        args: tuple[str, ...],
+        body: dict[str, Any],
+        _query: dict[str, Any],
+    ) -> None:
+        base_metrics = body.get("base_metrics")
+        adapter_metrics = body.get("adapter_metrics")
+        holdout_prompts = body.get("holdout_prompts")
+        if not isinstance(base_metrics, dict) or not isinstance(adapter_metrics, dict):
+            raise ValueError("base_metrics and adapter_metrics must be objects")
+        if not isinstance(holdout_prompts, list):
+            raise ValueError("holdout_prompts must be a list")
+        self._json_response(
+            self.app.training.record_lora_evaluation(
+                args[0],
+                base_metrics=base_metrics,
+                adapter_metrics=adapter_metrics,
+                holdout_prompts=holdout_prompts,
+                minimum_score=float(body.get("minimum_score", 0.85)),
+                maximum_score_regression=float(body.get("maximum_score_regression", 0.0)),
+                maximum_latency_increase_ms=(
+                    float(body["maximum_latency_increase_ms"])
+                    if body.get("maximum_latency_increase_ms") is not None
+                    else None
+                ),
+                maximum_failure_increase=(
+                    int(body["maximum_failure_increase"])
+                    if body.get("maximum_failure_increase") is not None
+                    else None
+                ),
+                evaluator_source="dashboard_api",
+                trusted_evaluator=False,
+            )
+        )
+
+    def _training_promote_job(self, args: tuple[str, ...], body: dict[str, Any], _query: dict[str, Any]) -> None:
+        self._json_response(
+            self.app.training.promote_lora_job(
+                args[0],
+                owner_confirmed=body.get("owner_confirmed") is True,
+            )
+        )
+
+    def _training_rollback_job(self, args: tuple[str, ...], body: dict[str, Any], _query: dict[str, Any]) -> None:
+        self._json_response(
+            self.app.training.rollback_lora_job(
+                args[0],
+                owner_confirmed=body.get("owner_confirmed") is True,
+            )
+        )
 
     def _training_export(self, _args: tuple[str, ...], body: dict[str, Any], _query: dict[str, Any]) -> None:
         reason = str(body.get("reason", "dashboard")).strip() or "dashboard"
@@ -1569,6 +1989,34 @@ class ProjectQHandler(BaseHTTPRequestHandler):
             f"Path=/; Max-Age={max_age}; HttpOnly; SameSite=Strict"
         )
 
+    def _maybe_owner_session_cookie_header(self) -> str:
+        if not self._can_mint_owner_session_cookie():
+            return ""
+        # Reuse an existing valid session rather than minting on every page load.
+        existing = self._cookie_value(OWNER_SESSION_COOKIE)
+        if existing:
+            try:
+                self.app.owner_auth.verify_session(existing)
+                return ""
+            except PermissionError:
+                pass
+        # When an owner passphrase is configured the browser must authenticate via
+        # POST /api/auth/login; never auto-mint a privileged session.
+        if self.app.owner_auth.passphrase_required():
+            return ""
+        return self._owner_session_cookie_header()
+
+    def _can_mint_owner_session_cookie(self) -> bool:
+        try:
+            client_host = str(self.client_address[0])
+            client_is_loopback = ipaddress.ip_address(client_host).is_loopback
+        except (IndexError, ValueError, TypeError):
+            client_is_loopback = False
+        return client_is_loopback and _is_loopback_host_header(
+            self.headers.get("Host", ""),
+            self.app.config.host,
+        )
+
     def _serve_static(self) -> None:
         path = self.path
         if path == "/":
@@ -1584,7 +2032,9 @@ class ProjectQHandler(BaseHTTPRequestHandler):
         content = requested.read_bytes()
         self.send_header("Content-Length", str(len(content)))
         if requested.name == "index.html":
-            self.send_header("Set-Cookie", self._owner_session_cookie_header())
+            cookie = self._maybe_owner_session_cookie_header()
+            if cookie:
+                self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(content)
 

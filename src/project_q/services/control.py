@@ -11,15 +11,25 @@ class ControlService:
         settings_service,
         audit_service,
         learning_service=None,
+        workflow_orchestrator=None,
+        owner_auth=None,
         sync_service=None,
     ) -> None:
         self.settings_service = settings_service
         self.audit_service = audit_service
         self.learning_service = learning_service
+        self.workflow_orchestrator = workflow_orchestrator
+        self.owner_auth = owner_auth
         self.sync_service = sync_service
 
     def attach_learning(self, learning_service) -> None:
         self.learning_service = learning_service
+
+    def attach_workflow_orchestrator(self, workflow_orchestrator) -> None:
+        self.workflow_orchestrator = workflow_orchestrator
+
+    def attach_owner_auth(self, owner_auth) -> None:
+        self.owner_auth = owner_auth
 
     def status(self) -> dict[str, Any]:
         settings = self.settings_service.get_all()
@@ -35,9 +45,6 @@ class ControlService:
         clean_source = str(source or "dashboard").strip()[:100] or "dashboard"
         activated_at = utc_now()
 
-        if self.learning_service is not None:
-            self.learning_service.stop()
-
         self.settings_service.update(
             SettingsUpdate(
                 kill_switch_active=True,
@@ -46,6 +53,13 @@ class ControlService:
                 kill_switch_source=clean_source,
             )
         )
+        if self.owner_auth is not None:
+            self.owner_auth.revoke_all_sessions(source=clean_source)
+        if self.learning_service is not None:
+            self.learning_service.stop()
+        if self.workflow_orchestrator is not None:
+            self.workflow_orchestrator.cancel_all(reason=f"kill switch: {clean_reason}")
+
         self.audit_service.log(
             action_type="kill_switch_activate",
             action_tier=3,

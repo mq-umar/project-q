@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,9 @@ from project_q.services.training import TrainingService
 from project_q.services.trust import TrustBoundaryService
 from project_q.services.vault import VaultService
 from project_q.services.voice import VoiceService
+from project_q.services.workflow_orchestrator import WorkflowOrchestratorService
+from project_q.services.workflow_process import SubprocessNodeBackend
+from project_q.services.workflow_service import WorkflowService
 from project_q.storage import Database
 from project_q.tools.registry import ToolRegistry
 from project_q.tools.diagnostics import DiagnosticsAutoRepairTool, DiagnosticsRunSelfCheckTool
@@ -75,6 +79,7 @@ class ProjectQApplication:
     tasks: TaskService
     agents: AgentService
     routines: RoutineService
+    workflows: WorkflowService
     settings: SettingsService
     policy: PolicyService
     control: ControlService
@@ -90,6 +95,7 @@ class ProjectQApplication:
     executor: PlanExecutorService
     agent_runner: AgentRunnerService
     routine_runner: RoutineRunnerService
+    workflow_orchestrator: WorkflowOrchestratorService
     conversations: ConversationService
     voice: VoiceService
     diagnostics: SelfDiagnosticsService
@@ -141,6 +147,7 @@ class ProjectQApplication:
         self.relay_bridge.start()
 
     def shutdown_services(self) -> None:
+        self.workflow_orchestrator.stop()
         if self.relay_bridge is not None:
             self.relay_bridge.stop()
         if self.scheduler is not None:
@@ -167,7 +174,8 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
     tasks = TaskService(db, sync)
     agents = AgentService(db, sync)
     routines = RoutineService(db, sync)
-    control = ControlService(settings, audit, sync_service=sync)
+    workflows = WorkflowService(db, sync)
+    control = ControlService(settings, audit, owner_auth=owner_auth, sync_service=sync)
     vault = VaultService(db)
     companion_protocol = CompanionProtocolService(db, vault, audit)
     companion_auth = CompanionAuthService(db, companion_protocol)
@@ -203,7 +211,7 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
     )
     tools.register(DiagnosticsRunSelfCheckTool(diagnostics))
     tools.register(DiagnosticsAutoRepairTool(self_repair))
-    training = TrainingService(db, memory, tasks, audit, resolved_config.data_root)
+    training = TrainingService(db, memory, tasks, audit, resolved_config.data_root, settings_service=settings)
     tools.register(TrainingExportDatasetTool(training))
     tools.register(TrainingCapabilityPlanTool(training))
     tools.register(TrainingPrepareLoraJobTool(training))
@@ -212,7 +220,7 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
     research = WebResearchService(tools.get("browser.inspect_page"), trust, audit)
     tools.register(ResearchWebTool(research))
     approvals = ApprovalService(db, vault, tools, policy, audit, sync)
-    context = ContextService(db, memory, tasks, agents, routines, settings, tools, resolved_config.workspace_root)
+    context = ContextService(db, memory, tasks, agents, routines, settings, tools, resolved_config.workspace_root, trust)
     reasoner = ReasonerService(settings, vault, audit)
     executor = PlanExecutorService(
         memory,
@@ -225,11 +233,20 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
         artifacts,
         code_repair,
         approvals,
+        trust,
     )
     agent_runner = AgentRunnerService(db, agents, context, reasoner, executor, audit)
     routine_runner = RoutineRunnerService(db, routines, agent_runner, tools, policy, audit)
+    workflow_backend = SubprocessNodeBackend(
+        python_executable=Path(sys.executable),
+        workspace_root=resolved_config.workspace_root,
+        data_root=resolved_config.data_root,
+        db_path=resolved_config.db_path,
+    )
+    workflow_orchestrator = WorkflowOrchestratorService(workflows, workflow_backend, agent_runner=agent_runner)
+    control.attach_workflow_orchestrator(workflow_orchestrator)
     scheduler = None
-    if settings.get_all().get("scheduler_enabled", True):
+    if not resolved_config.worker_mode and settings.get_all().get("scheduler_enabled", True):
         try:
             from project_q.services.scheduler import RoutineSchedulerService
             scheduler = RoutineSchedulerService(routines, routine_runner)
@@ -250,7 +267,11 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
     learning = LearningLabService(db, memory, tasks, agents, routines, settings, tools, audit, diagnostics)
     control.attach_learning(learning)
     relay_provisioner = None
-    if resolved_config.relay_base_url and resolved_config.relay_bootstrap_token:
+    if (
+        not resolved_config.worker_mode
+        and resolved_config.relay_base_url
+        and resolved_config.relay_bootstrap_token
+    ):
         relay_client = RelayHTTPClient(resolved_config.relay_base_url)
         relay_provisioner = RelayProvisioningService(
             relay_base_url=resolved_config.relay_base_url,
@@ -259,7 +280,7 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
             vault_service=vault,
         )
 
-    return ProjectQApplication(
+    application = ProjectQApplication(
         config=resolved_config,
         started_at=started_at,
         build_id=build_id,
@@ -276,6 +297,7 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
         tasks=tasks,
         agents=agents,
         routines=routines,
+        workflows=workflows,
         settings=settings,
         policy=policy,
         control=control,
@@ -291,6 +313,7 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
         executor=executor,
         agent_runner=agent_runner,
         routine_runner=routine_runner,
+        workflow_orchestrator=workflow_orchestrator,
         conversations=conversations,
         voice=voice,
         diagnostics=diagnostics,
@@ -303,3 +326,6 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
         relay_provisioner=relay_provisioner,
         relay_bridge=None,
     )
+    if not resolved_config.worker_mode:
+        workflow_orchestrator.start()
+    return application
