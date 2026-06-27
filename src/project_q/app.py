@@ -237,6 +237,8 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
             GitHubCreateIssueTool,
             GitHubListIssuesTool,
             GitHubListReposTool,
+            LinearCreateIssueTool,
+            LinearListIssuesTool,
             NotionCreatePageTool,
             NotionSearchTool,
             SlackListChannelsTool,
@@ -254,6 +256,8 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
         tools.register(NotionCreatePageTool(vault, settings))
         tools.register(TodoistListTasksTool(vault, settings))
         tools.register(TodoistCreateTaskTool(vault, settings))
+        tools.register(LinearListIssuesTool(vault, settings))
+        tools.register(LinearCreateIssueTool(vault, settings))
     except Exception:
         pass
     approvals = ApprovalService(db, vault, tools, policy, audit, sync)

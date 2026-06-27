@@ -18,6 +18,8 @@ from project_q.tools.connectors import (
     GitHubCreateIssueTool,
     GitHubListIssuesTool,
     GitHubListReposTool,
+    LinearCreateIssueTool,
+    LinearListIssuesTool,
     NotionCreatePageTool,
     NotionSearchTool,
     SlackListChannelsTool,
@@ -225,6 +227,35 @@ class ConnectorUnitTests(unittest.TestCase):
             {"content": "Buy milk", "due_string": "tomorrow", "priority": 4},
         )
 
+    # ── Linear (raw-key GraphQL) ──────────────────────────────────────────────
+    def test_linear_list_issues_uses_raw_auth(self) -> None:
+        self.assertEqual(LinearListIssuesTool.definition.tier, 0)
+        rec = _RecordingTransport(response={"data": {"issues": {"nodes": []}}})
+        tool = LinearListIssuesTool(_FakeVault({"linear_api_key": "lin_key"}), _FakeSettings(), transport=rec)
+        tool.execute({})
+        call = rec.calls[0]
+        self.assertEqual(call["url"], "https://api.linear.app/graphql")
+        self.assertEqual(call["method"], "POST")
+        # Raw scheme: bare key, NOT "Bearer <key>".
+        self.assertEqual(call["headers"]["Authorization"], "lin_key")
+        self.assertIn("issues", json.loads(call["body_bytes"].decode("utf-8"))["query"])
+
+    def test_linear_create_issue_tier1_and_team_validation(self) -> None:
+        self.assertEqual(LinearCreateIssueTool.definition.tier, 1)
+        rec = _RecordingTransport(response={"data": {"issueCreate": {"success": True}}})
+        tool = LinearCreateIssueTool(_FakeVault({"linear_api_key": "lin_key"}), _FakeSettings(), transport=rec)
+        self.assertEqual(tool.execute({"title": "T"}), {"error": "valid team_id is required"})
+        self.assertEqual(rec.calls, [])
+        tool.execute({"team_id": "team-123", "title": "Fix bug", "description": "d"})
+        body = json.loads(rec.calls[0]["body_bytes"].decode("utf-8"))
+        self.assertEqual(body["variables"], {"title": "Fix bug", "teamId": "team-123", "description": "d"})
+
+    def test_linear_missing_token_no_transport(self) -> None:
+        rec = _RecordingTransport()
+        tool = LinearListIssuesTool(_FakeVault(), _FakeSettings(), transport=rec)
+        self.assertEqual(tool.execute({}), {"error": "linear_api_key not configured in the vault"})
+        self.assertEqual(rec.calls, [])
+
 
 class ConnectorAppHarnessTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -259,6 +290,8 @@ class ConnectorAppHarnessTests(unittest.TestCase):
             "notion.create_page": 1,
             "todoist.list_tasks": 0,
             "todoist.create_task": 1,
+            "linear.list_issues": 0,
+            "linear.create_issue": 1,
         }
         for tool_id, tier in expected.items():
             tool = self.app.tools.get(tool_id)

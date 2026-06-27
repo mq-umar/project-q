@@ -18,6 +18,8 @@ _INTERNET_TOOLS: frozenset[str] = frozenset({
     "notion.create_page",
     "todoist.list_tasks",
     "todoist.create_task",
+    "linear.list_issues",
+    "linear.create_issue",
 })
 
 

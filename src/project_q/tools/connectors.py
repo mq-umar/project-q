@@ -52,6 +52,8 @@ _NOTION_HEADERS = {"Notion-Version": "2022-06-28"}
 _NOTION_SECRET = "notion_token"
 _TODOIST_BASE = "https://api.todoist.com/rest/v2"
 _TODOIST_SECRET = "todoist_token"
+_LINEAR_BASE = "https://api.linear.app"
+_LINEAR_SECRET = "linear_api_key"
 # A GitHub repo must be exactly owner/name — reject extra path/query/CRLF so an
 # owner-supplied value cannot alter the request line (confused-deputy hardening).
 _REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
@@ -68,6 +70,8 @@ __all__ = [
     "NotionCreatePageTool",
     "TodoistListTasksTool",
     "TodoistCreateTaskTool",
+    "LinearListIssuesTool",
+    "LinearCreateIssueTool",
 ]
 
 
@@ -125,7 +129,7 @@ def _default_transport(
 
 
 class _BearerHttpClient:
-    """Performs bearer-authenticated GET/POST to a fixed https API host."""
+    """Performs token-authenticated GET/POST to a fixed https API host."""
 
     def __init__(
         self,
@@ -134,18 +138,23 @@ class _BearerHttpClient:
         default_headers: dict | None = None,
         timeout: float = _HTTP_TIMEOUT_SECONDS,
         transport: Transport | None = None,
+        auth_scheme: str = "bearer",
     ) -> None:
         self.token = token
         self.base_url = base_url
         self.default_headers = dict(default_headers or {})
         self.timeout = timeout
         self.transport = transport or _default_transport
+        # "bearer" -> "Authorization: Bearer <token>"; "raw" -> "Authorization: <token>"
+        # (Linear and some APIs expect the bare key with no scheme prefix).
+        self.auth_scheme = auth_scheme
 
     def request(self, method: str, path: str, body: Any = None) -> dict:
         """Build and send the request; NEVER raises — errors -> {error}."""
         try:
             url = self.base_url + path
-            headers = {"Authorization": f"Bearer {self.token}"}
+            auth_value = self.token if self.auth_scheme == "raw" else f"Bearer {self.token}"
+            headers = {"Authorization": auth_value}
             headers.update(self.default_headers)
             body_bytes: bytes | None = None
             if method == "POST":
@@ -391,3 +400,58 @@ class TodoistCreateTaskTool(_ConnectorBase):
             return err
         client = _BearerHttpClient(token, _TODOIST_BASE, transport=self.transport)
         return client.request("POST", "/tasks", body)
+
+
+# ── Linear connectors (GraphQL, raw-key auth) ─────────────────────────────────
+class LinearListIssuesTool(_ConnectorBase):
+    definition = ToolDefinition(
+        tool_id="linear.list_issues",
+        name="Linear: List Issues",
+        description="List recent Linear issues.",
+        tier=0,
+    )
+
+    def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._network_local_only():
+            return {"error": "network_policy=local_only blocks linear.list_issues"}
+        token, err = self._resolve_token(_LINEAR_SECRET)
+        if err is not None:
+            return err
+        query = "{ issues(first: 20) { nodes { id title state { name } } } }"
+        client = _BearerHttpClient(token, _LINEAR_BASE, transport=self.transport, auth_scheme="raw")
+        return client.request("POST", "/graphql", {"query": query})
+
+
+class LinearCreateIssueTool(_ConnectorBase):
+    definition = ToolDefinition(
+        tool_id="linear.create_issue",
+        name="Linear: Create Issue",
+        description="Create an issue. payload {team_id, title, description?}.",
+        tier=1,
+    )
+
+    def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._network_local_only():
+            return {"error": "network_policy=local_only blocks linear.create_issue"}
+        payload = payload or {}
+        team_id = str(payload.get("team_id", "")).strip()
+        if not _ID_RE.match(team_id):
+            return {"error": "valid team_id is required"}
+        title = str(payload.get("title", "")).strip()
+        if not title:
+            return {"error": "title is required"}
+        token, err = self._resolve_token(_LINEAR_SECRET)
+        if err is not None:
+            return err
+        mutation = (
+            "mutation IssueCreate($title: String!, $teamId: String!, $description: String) "
+            "{ issueCreate(input: {title: $title, teamId: $teamId, description: $description}) "
+            "{ success issue { id identifier } } }"
+        )
+        variables = {
+            "title": title,
+            "teamId": team_id,
+            "description": str(payload.get("description", "")),
+        }
+        client = _BearerHttpClient(token, _LINEAR_BASE, transport=self.transport, auth_scheme="raw")
+        return client.request("POST", "/graphql", {"query": mutation, "variables": variables})
