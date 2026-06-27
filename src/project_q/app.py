@@ -104,6 +104,7 @@ class ProjectQApplication:
     training: TrainingService
     dispatches: ProjectDispatchService
     tools: ToolRegistry
+    plugins: Any
     scheduler: Any
     relay_provisioner: Any
     relay_bridge: Any
@@ -192,6 +193,14 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
     knowledge = KnowledgeWorkService(settings, audit)
     dispatches = ProjectDispatchService(db, resolved_config.workspace_root)
     tools = ToolRegistry(resolved_config.workspace_root, resolved_config.data_root, settings)
+    from project_q.services.plugins import PluginManager
+
+    plugins = PluginManager(
+        resolved_config.data_root / "plugins",
+        audit_service=audit,
+        workspace_root=resolved_config.workspace_root,
+        settings_service=settings,
+    )
     tools.register(WebsiteGeneratorTool(resolved_config.workspace_root, dispatch_service=dispatches))
     tools.register(ProjectGeneratorTool(resolved_config.workspace_root, dispatch_service=dispatches))
     tools.register(ProjectPlanBuildTool(dispatches))
@@ -281,6 +290,12 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
             vault_service=vault,
         )
 
+    # Pin collision detection against the FULLY-registered tool set (built-ins
+    # plus the post-construction tools.register(...) additions above).
+    plugins.builtin_tool_ids = {
+        tid for tid in tools.tools.keys() if not tid.startswith("plugin.")
+    }
+
     application = ProjectQApplication(
         config=resolved_config,
         started_at=started_at,
@@ -323,6 +338,7 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
         training=training,
         dispatches=dispatches,
         tools=tools,
+        plugins=plugins,
         scheduler=scheduler,
         relay_provisioner=relay_provisioner,
         relay_bridge=None,

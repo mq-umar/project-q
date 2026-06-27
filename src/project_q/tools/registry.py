@@ -136,6 +136,24 @@ class ToolRegistry:
         except ImportError:
             pass
 
+        # Declarative plugins (conditionally + best-effort loaded). A broken or
+        # hostile plugins dir must NEVER affect built-in tools or app startup.
+        self.plugin_manager = None
+        try:
+            from project_q.services.plugins import PluginManager
+
+            manager = PluginManager(
+                data_root / "plugins",
+                workspace_root=workspace_root,
+                settings_service=settings_service,
+                builtin_tool_ids=set(self.tools.keys()),
+            )
+            for plugin_tool in manager.load_all():
+                self.tools[plugin_tool.definition.tool_id] = plugin_tool
+            self.plugin_manager = manager
+        except Exception:  # noqa: BLE001 - isolation: never break startup
+            pass
+
     def describe_all(self) -> list[dict[str, Any]]:
         return [
             {

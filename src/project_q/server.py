@@ -312,6 +312,9 @@ class ProjectQHandler(BaseHTTPRequestHandler):
             ("POST", r"^/api/training/prepare-lora$", self._training_prepare_lora),
             ("GET", r"^/api/tools$", self._list_tools),
             ("POST", r"^/api/tools/execute$", self._execute_tool),
+            ("GET", r"^/api/plugins$", self._list_plugins),
+            ("POST", r"^/api/plugins$", self._install_plugin),
+            ("DELETE", r"^/api/plugins/([^/]+)$", self._remove_plugin),
             ("GET", r"^/api/secrets$", self._list_secrets),
             ("POST", r"^/api/secrets$", self._upsert_secret),
             ("DELETE", r"^/api/secrets/([^/]+)$", self._delete_secret),
@@ -513,6 +516,7 @@ class ProjectQHandler(BaseHTTPRequestHandler):
                 "/api/routines",
                 "/api/settings",
                 "/api/tools",
+                "/api/plugins",
                 "/api/secrets",
                 "/api/dispatches",
                 "/api/diagnostics",
@@ -1646,6 +1650,26 @@ class ProjectQHandler(BaseHTTPRequestHandler):
             metadata={"payload": request.payload, "result_preview": str(result)[:400]},
         )
         self._json_response({"result": result, "policy_reason": decision.reason})
+
+    def _list_plugins(self, _args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
+        self._json_response({"items": self.app.plugins.list()})
+
+    def _install_plugin(self, _args: tuple[str, ...], body: dict[str, Any], _query: dict[str, Any]) -> None:
+        # plugins.install raises ValueError on validation/collision -> 400 via _route_api.
+        definition = self.app.plugins.install(body)
+        # Hot-register the new PluginTool into the LIVE registry so it is usable
+        # immediately without a restart, exactly as load_all() would.
+        plugin_id = definition["tool_id"].split(".", 1)[1]
+        tool = self.app.plugins.get_tool(plugin_id)
+        if tool is not None:
+            self.app.tools.register(tool)
+        self._json_response(definition, status=HTTPStatus.CREATED)
+
+    def _remove_plugin(self, args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
+        plugin_id = args[0]
+        removed = self.app.plugins.remove(plugin_id)
+        self.app.tools.tools.pop(f"plugin.{plugin_id}", None)
+        self._json_response({"deleted": plugin_id, "removed": removed})
 
     def _list_secrets(self, _args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
         self._json_response({"items": self.app.vault.list_secret_names()})
