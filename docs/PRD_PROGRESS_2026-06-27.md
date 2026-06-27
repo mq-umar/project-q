@@ -20,6 +20,7 @@ workflow) and gated on a full unittest run before commit.
 | `c20931e` | **Agent supervisor** (§7) — root tool-call budget propagation across a workflow. |
 | `cb57308` | **MCP client** (Claude-Code-style external tools) — clean-room JSON-RPC/stdio, isolated reader-thread + timeouts, owner-gated install/remove, never breaks startup. |
 | `0f0a382` | **Get-smarter loop closed + ceilings raised** (23-agent assessment) — reflect-in-cycle drives playbook candidates; recurrence-ranked candidates; dropped the 3-tool truncation (default 8 / honor agent budget); research.web on the Research template; coherent non-TODO script projects. |
+| `295ec72` | **Observe-then-replan** — gated, synthesis-only refine pass feeds read-only tool observations back to the provider so any model answers grounded in tool output; never re-executes tools. Dashboard toggle + smartness note. |
 
 ## Connector coverage (PRD §10.4)
 GitHub · Slack · Notion · Todoist · Linear · Google (Calendar/Drive, OAuth2) ·
