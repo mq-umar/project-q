@@ -237,6 +237,9 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
             GitHubCreateIssueTool,
             GitHubListIssuesTool,
             GitHubListReposTool,
+            GoogleCalendarCreateEventTool,
+            GoogleCalendarListEventsTool,
+            GoogleDriveListFilesTool,
             LinearCreateIssueTool,
             LinearListIssuesTool,
             NotionCreatePageTool,
@@ -258,6 +261,9 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
         tools.register(TodoistCreateTaskTool(vault, settings))
         tools.register(LinearListIssuesTool(vault, settings))
         tools.register(LinearCreateIssueTool(vault, settings))
+        tools.register(GoogleCalendarListEventsTool(vault, settings))
+        tools.register(GoogleCalendarCreateEventTool(vault, settings))
+        tools.register(GoogleDriveListFilesTool(vault, settings))
     except Exception:
         pass
     approvals = ApprovalService(db, vault, tools, policy, audit, sync)

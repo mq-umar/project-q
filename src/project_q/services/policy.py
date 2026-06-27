@@ -20,6 +20,9 @@ _INTERNET_TOOLS: frozenset[str] = frozenset({
     "todoist.create_task",
     "linear.list_issues",
     "linear.create_issue",
+    "google_calendar.list_events",
+    "google_calendar.create_event",
+    "google_drive.list_files",
 })
 
 

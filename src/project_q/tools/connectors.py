@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Callable
 
@@ -54,6 +55,16 @@ _TODOIST_BASE = "https://api.todoist.com/rest/v2"
 _TODOIST_SECRET = "todoist_token"
 _LINEAR_BASE = "https://api.linear.app"
 _LINEAR_SECRET = "linear_api_key"
+# ── Google OAuth2 (refresh-token grant) ───────────────────────────────────────
+# Unlike the other connectors (which present a single long-lived bearer token
+# straight from the vault), Google APIs require a short-lived access token minted
+# at execute() time by exchanging a stored refresh token at the token endpoint.
+_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+_GOOGLE_CLIENT_ID_SECRET = "google_client_id"
+_GOOGLE_CLIENT_SECRET_SECRET = "google_client_secret"
+_GOOGLE_REFRESH_TOKEN_SECRET = "google_refresh_token"
+_GCAL_BASE = "https://www.googleapis.com/calendar/v3"
+_GDRIVE_BASE = "https://www.googleapis.com/drive/v3"
 # A GitHub repo must be exactly owner/name — reject extra path/query/CRLF so an
 # owner-supplied value cannot alter the request line (confused-deputy hardening).
 _REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
@@ -72,6 +83,9 @@ __all__ = [
     "TodoistCreateTaskTool",
     "LinearListIssuesTool",
     "LinearCreateIssueTool",
+    "GoogleCalendarListEventsTool",
+    "GoogleCalendarCreateEventTool",
+    "GoogleDriveListFilesTool",
 ]
 
 
@@ -455,3 +469,136 @@ class LinearCreateIssueTool(_ConnectorBase):
         }
         client = _BearerHttpClient(token, _LINEAR_BASE, transport=self.transport, auth_scheme="raw")
         return client.request("POST", "/graphql", {"query": mutation, "variables": variables})
+
+
+# ── Google OAuth2 connectors (refresh-token grant -> short-lived access token) ─
+class _GoogleOAuthBase(_ConnectorBase):
+    """Mixin that mints a short-lived Google access token from a stored refresh
+    token before each API call.
+
+    Google's three secrets (client id, client secret, refresh token) live in the
+    vault. The client_secret, refresh_token, and the minted access_token are
+    OAuth bearer credentials: they must NEVER appear in any returned dict, audit
+    record, or error string. Every failure therefore collapses to a fixed,
+    secret-free message. The exchange reuses self.transport (injectable) and the
+    no-redirect opener via _BearerHttpClient/_default_transport, so the same SSRF
+    and header-injection defenses as the other connectors apply, and the layer is
+    fully testable without live Google credentials.
+    """
+
+    def _google_access_token(self) -> tuple[str | None, dict | None]:
+        """Return (access_token, None) or (None, {error}). NEVER raises.
+
+        If ANY of the three secrets is absent, return the not-configured error
+        with NO network call (graceful no-creds behavior). Otherwise POST a
+        form-urlencoded refresh_token grant to the token endpoint and parse the
+        access_token; any failure -> a generic, secret-free error.
+        """
+        try:
+            client_id = self.vault.get_secret(_GOOGLE_CLIENT_ID_SECRET)
+            client_secret = self.vault.get_secret(_GOOGLE_CLIENT_SECRET_SECRET)
+            refresh_token = self.vault.get_secret(_GOOGLE_REFRESH_TOKEN_SECRET)
+        except KeyError:
+            return None, {
+                "error": (
+                    "google OAuth not configured in the vault (need "
+                    "google_client_id, google_client_secret, google_refresh_token)"
+                )
+            }
+        except Exception:  # noqa: BLE001 - never raise out of execute()
+            return None, {"error": "google token refresh failed"}
+
+        try:
+            form = urllib.parse.urlencode(
+                {
+                    "grant_type": "refresh_token",
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "refresh_token": refresh_token,
+                }
+            ).encode("utf-8")
+            headers = {
+                _strip_crlf("Content-Type"): _strip_crlf(
+                    "application/x-www-form-urlencoded"
+                )
+            }
+            transport = self.transport or _default_transport
+            result = transport(
+                _GOOGLE_TOKEN_URL, "POST", headers, form, _HTTP_TIMEOUT_SECONDS
+            )
+            if isinstance(result, dict):
+                access_token = result.get("access_token")
+                if isinstance(access_token, str) and access_token:
+                    return access_token, None
+            return None, {"error": "google token refresh failed"}
+        except Exception:  # noqa: BLE001 - never leak an exception carrying a secret
+            return None, {"error": "google token refresh failed"}
+
+
+class GoogleCalendarListEventsTool(_GoogleOAuthBase):
+    definition = ToolDefinition(
+        tool_id="google_calendar.list_events",
+        name="Google Calendar: List Events",
+        description="List upcoming events on the primary Google Calendar.",
+        tier=0,
+    )
+
+    def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._network_local_only():
+            return {"error": "network_policy=local_only blocks google_calendar.list_events"}
+        access_token, err = self._google_access_token()
+        if err is not None:
+            return err
+        client = _BearerHttpClient(access_token, _GCAL_BASE, transport=self.transport)
+        return client.request("GET", "/calendars/primary/events")
+
+
+class GoogleCalendarCreateEventTool(_GoogleOAuthBase):
+    definition = ToolDefinition(
+        tool_id="google_calendar.create_event",
+        # Writes to the owner's own primary calendar (mirrors notion.create_page /
+        # todoist.create_task private-write tier 1).
+        name="Google Calendar: Create Event",
+        description="Create an event. payload {summary, start, end} (RFC3339 dateTimes).",
+        tier=1,
+    )
+
+    def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._network_local_only():
+            return {"error": "network_policy=local_only blocks google_calendar.create_event"}
+        payload = payload or {}
+        summary = str(payload.get("summary", "")).strip()
+        if not summary:
+            return {"error": "summary is required"}
+        start = str(payload.get("start", "")).strip()
+        end = str(payload.get("end", "")).strip()
+        if not start or not end:
+            return {"error": "start and end are required"}
+        access_token, err = self._google_access_token()
+        if err is not None:
+            return err
+        body = {
+            "summary": summary,
+            "start": {"dateTime": start},
+            "end": {"dateTime": end},
+        }
+        client = _BearerHttpClient(access_token, _GCAL_BASE, transport=self.transport)
+        return client.request("POST", "/calendars/primary/events", body)
+
+
+class GoogleDriveListFilesTool(_GoogleOAuthBase):
+    definition = ToolDefinition(
+        tool_id="google_drive.list_files",
+        name="Google Drive: List Files",
+        description="List files in the owner's Google Drive.",
+        tier=0,
+    )
+
+    def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._network_local_only():
+            return {"error": "network_policy=local_only blocks google_drive.list_files"}
+        access_token, err = self._google_access_token()
+        if err is not None:
+            return err
+        client = _BearerHttpClient(access_token, _GDRIVE_BASE, transport=self.transport)
+        return client.request("GET", "/files")
