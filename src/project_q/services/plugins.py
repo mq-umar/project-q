@@ -158,9 +158,16 @@ class PluginManifest(BaseModel):
             if not self.url:
                 raise ValueError("http plugins require a url")
             # Re-assert scheme (covers url provided without the field validator path).
-            scheme = urlparse(self.url).scheme.lower()
+            parsed = urlparse(self.url)
+            scheme = parsed.scheme.lower()
             if scheme not in {"http", "https"}:
                 raise ValueError("url scheme must be http or https")
+            # SSRF defense: the destination HOST must be a literal fixed at install
+            # time. Only the path/query may be payload-templated — a templated host
+            # ('{...}' in the netloc) would let an execute-time payload retarget the
+            # request to an arbitrary internal/cloud-metadata host.
+            if not parsed.hostname or "{" in (parsed.netloc or ""):
+                raise ValueError("http plugin url host must be a literal (no host templating)")
             # Clamp tier into 0..2 (never 3 by self-declaration).
             object.__setattr__(self, "tier", max(0, min(int(self.tier), 2)))
         elif self.type == "shell":

@@ -274,13 +274,20 @@ class MemoryService:
 
         scored: list[tuple[float, dict[str, Any]]] = []
         for lexical_score, mem, row in candidates:
-            final_score = lexical_score
-            if query_embedding is not None:
+            if query_embedding is None:
+                final_score = lexical_score
+            else:
+                # Blend EVERY candidate on one scale: a row lacking an embedding
+                # (legacy / created while Ollama was down) gets a neutral 0.0
+                # similarity rather than keeping a raw lexical score that would
+                # otherwise systematically outrank freshly-embedded rows.
                 row_embedding = self._row_embedding(row)
-                if row_embedding is not None:
-                    similarity = cosine_similarity(query_embedding, row_embedding)
-                    # Hybrid blend: lexical anchors recall, cosine refines ranking.
-                    final_score = 0.5 * lexical_score + 0.5 * similarity
+                similarity = (
+                    cosine_similarity(query_embedding, row_embedding)
+                    if row_embedding is not None
+                    else 0.0
+                )
+                final_score = 0.5 * lexical_score + 0.5 * similarity
             scored.append((final_score, mem))
         scored.sort(key=lambda item: item[0], reverse=True)
         return [mem for _, mem in scored]

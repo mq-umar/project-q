@@ -33,7 +33,10 @@ class WorkflowOrchestratorService:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop_event.clear()
-        self.reconcile()
+        try:
+            self.reconcile()
+        except Exception:  # noqa: BLE001 - reconcile must never abort app startup
+            pass
         try:
             self.workflow_service.prune_history()
         except Exception:  # noqa: BLE001

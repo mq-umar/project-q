@@ -240,8 +240,8 @@ class ConnectorUnitTests(unittest.TestCase):
         self.assertEqual(call["headers"]["Authorization"], "lin_key")
         self.assertIn("issues", json.loads(call["body_bytes"].decode("utf-8"))["query"])
 
-    def test_linear_create_issue_tier1_and_team_validation(self) -> None:
-        self.assertEqual(LinearCreateIssueTool.definition.tier, 1)
+    def test_linear_create_issue_tier2_and_team_validation(self) -> None:
+        self.assertEqual(LinearCreateIssueTool.definition.tier, 2)
         rec = _RecordingTransport(response={"data": {"issueCreate": {"success": True}}})
         tool = LinearCreateIssueTool(_FakeVault({"linear_api_key": "lin_key"}), _FakeSettings(), transport=rec)
         self.assertEqual(tool.execute({"title": "T"}), {"error": "valid team_id is required"})
@@ -291,7 +291,7 @@ class ConnectorAppHarnessTests(unittest.TestCase):
             "todoist.list_tasks": 0,
             "todoist.create_task": 1,
             "linear.list_issues": 0,
-            "linear.create_issue": 1,
+            "linear.create_issue": 2,
         }
         for tool_id, tier in expected.items():
             tool = self.app.tools.get(tool_id)

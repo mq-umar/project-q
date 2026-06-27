@@ -128,7 +128,7 @@ class PolicyService:
         aggression = str(settings.get("aggression_level", "operator"))
         if aggression == "conservative":
             base = min(base, 0)
-        elif aggression == "balanced":
+        elif aggression in ("balanced", "normal"):
             base = min(base, 1)
         elif aggression == "maximum":
             base = max(base, 2)

@@ -38,9 +38,9 @@ from project_q.tools.base import ToolDefinition
 Transport = Callable[[str, str, dict, "bytes | None", float], dict]
 
 _HTTP_TIMEOUT_SECONDS = 15
-# Bounded read: generous (>=64KB) to avoid truncating typical responses while
-# still preventing memory blowup from a hostile/huge response.
-_MAX_BODY_BYTES = 64 * 1024 + 1
+# Bounded body: a realistic API ceiling so normal (large) connector responses are
+# not silently truncated into a JSON-parse error, while still capping memory.
+_MAX_BODY_BYTES = 4 * 1024 * 1024
 
 _GITHUB_BASE = "https://api.github.com"
 _GITHUB_HEADERS = {"Accept": "application/vnd.github+json"}
@@ -455,8 +455,10 @@ class LinearCreateIssueTool(_ConnectorBase):
     definition = ToolDefinition(
         tool_id="linear.create_issue",
         name="Linear: Create Issue",
+        # External write visible to a shared Linear team: tier 2 for parity with
+        # github.create_issue / slack.post_message / msgraph.send_mail.
         description="Create an issue. payload {team_id, title, description?}.",
-        tier=1,
+        tier=2,
     )
 
     def execute(self, payload: dict[str, Any]) -> dict[str, Any]:

@@ -56,6 +56,18 @@ class PluginHardeningTests(unittest.TestCase):
             self.assertEqual(listed[0]["headers"]["Authorization"], "***")
             self.assertNotIn("SECRET-TOKEN", str(listed))
 
+    def test_templated_host_url_is_rejected(self) -> None:
+        # SSRF defense: a payload-templated HOST must be rejected at install...
+        with self.assertRaises(ValidationError):
+            PluginManifest.model_validate(
+                {"id": "ssrf-1", "name": "x", "type": "http", "url": "http://{target}/p", "method": "GET"}
+            )
+        # ...but path/query templating against a LITERAL host stays allowed.
+        ok = PluginManifest.model_validate(
+            {"id": "ok-1", "name": "x", "type": "http", "url": "https://api.example.com/{path}", "method": "GET"}
+        )
+        self.assertEqual(ok.id, "ok-1")
+
 
 if __name__ == "__main__":
     unittest.main()

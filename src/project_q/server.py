@@ -604,8 +604,8 @@ class ProjectQHandler(BaseHTTPRequestHandler):
     def _blocked_by_kill_switch(self, method: str, path: str) -> bool:
         if method not in {"POST", "PUT", "DELETE"}:
             return False
-        if path in {"/api/control/kill-switch", "/api/control/resume"}:
-            return False
+        if path in {"/api/control/kill-switch", "/api/control/resume", "/api/auth/login"}:
+            return False  # owner must be able to re-authenticate to resume
         if method == "POST" and re.match(r"^/api/workflow-runs/[^/]+/cancel$", path):
             return False
         if method == "POST" and re.match(r"^/api/training/jobs/[^/]+/rollback$", path):
@@ -1659,12 +1659,12 @@ class ProjectQHandler(BaseHTTPRequestHandler):
     def _install_plugin(self, _args: tuple[str, ...], body: dict[str, Any], _query: dict[str, Any]) -> None:
         # plugins.install raises ValueError on validation/collision -> 400 via _route_api.
         definition = self.app.plugins.install(body)
-        # Hot-register the new PluginTool into the LIVE registry so it is usable
-        # immediately without a restart, exactly as load_all() would.
-        plugin_id = definition["tool_id"].split(".", 1)[1]
-        tool = self.app.plugins.get_tool(plugin_id)
-        if tool is not None:
-            self.app.tools.register(tool)
+        # Build the tool from the validated manifest (no disk round-trip) and
+        # hot-register it so it is usable immediately without a restart.
+        try:
+            self.app.tools.register(self.app.plugins.build_tool(body))
+        except Exception:  # noqa: BLE001 - already persisted; registration is best-effort
+            pass
         self._json_response(definition, status=HTTPStatus.CREATED)
 
     def _remove_plugin(self, args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
