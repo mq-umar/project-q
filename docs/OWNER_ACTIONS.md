@@ -23,17 +23,21 @@ Settings → Provider. Free/local: install [Ollama](https://ollama.com), pull a 
 and store the API key in the **Vault** (Secrets panel). Ollama also powers the new
 **semantic memory** embeddings automatically once it's running.
 
-**Smartness note (important).** Project Q's harness is now model-agnostic and does the
-"smart" structural work itself — multi-step tool turns (up to 8/turn, or an agent's
-declared budget), an optional **observe-then-replan** pass (Settings → toggle: after
-read-only tools run, it re-answers grounded in what they returned), a closed
-**get-smarter loop** (reflection → playbook candidates → recurrence ranking → owner
-promotion), and routed local models for general/coding/reasoning/fast roles. But the
-*ceiling* of intelligence (frontier-grade code, research papers, hard math/science) is
-set by the **provider you point it at**. For the highest capability, use a frontier model
-— e.g. **Claude Opus** — as the provider; small local models will be noticeably weaker on
-hard problems even with the better harness. Turn on **Observe-then-replan** once a
-provider is configured to get the most out of it.
+**Smartness note (important).** A lot of intelligence is now **intrinsic** — it works with
+no provider at all: it solves linear and **quadratic equations** (real/double/complex
+roots), **percentages**, **statistics** (mean/median/stdev), and rich arithmetic
+(`sqrt`, `factorial`, powers, modulo, trig, `pi`/`e`) via a safe whitelisted evaluator;
+generates real code projects and websites; runs agents and workflows; and **gets smarter
+on its own** through a closed reflection → playbook → recurrence-ranking → promotion loop.
+The harness also does structural "smart" work model-agnostically: multi-step tool turns
+(up to 8/turn, or an agent's budget) and an optional **observe-then-replan** pass
+(Settings toggle: after read-only tools run, it re-answers grounded in what they returned).
+
+That said, the hardest open-ended work — frontier-grade code, full research papers,
+olympiad math — scales with the **model** you give it. For maximum capability, point it at
+a frontier model (e.g. **Claude Opus**) as the provider and enable **Observe-then-replan**;
+a self-hosted Ollama model (deepseek-r1 / qwen-coder) keeps it fully local. The system is
+as smart as it can be on its own, and scales up with a stronger brain.
 
 ## 3. Activate connectors — store a token in the Vault
 Open the **Connectors** panel (it shows which are configured). Add each token in the
@@ -90,8 +94,8 @@ never break startup or built-in tools — it's isolated and best-effort.
 ---
 **Status:** Phase 1 done · Phase 2 source-complete (needs §6) · Phase 3 ~92% · Phase 4 ~65%.
 Two full audits (53 + 10 confirmed findings) + a 23-agent capability assessment, all
-adversarially verified and fixed/implemented. **467 unit tests** + a **22/22 end-to-end
+adversarially verified and fixed/implemented. **480 unit tests** + a **22/22 end-to-end
 capability probe** + Phase-1/2 verifiers + prompt-injection & self-diagnostics simulations
 — all green. Recent capability work: MCP client, closed get-smarter loop, observe-then-
-replan, raised the 3-tool ceiling, spreadsheet derived formulas. Per-commit log:
-`docs/PRD_PROGRESS_2026-06-27.md`.
+replan, raised the 3-tool ceiling, spreadsheet derived formulas, intrinsic math solvers
+(quadratics/percent/stats/functions). Per-commit log: `docs/PRD_PROGRESS_2026-06-27.md`.

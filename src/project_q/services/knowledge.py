@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import ast
 import json
+import math
 import operator
 import re
+import statistics
 from typing import Any, Callable
 from urllib import error, request
 
@@ -55,7 +57,14 @@ class KnowledgeWorkService:
             return "quant"
         if any(marker in lowered for marker in ("history", "historical", "civilization", "empire", "war", "revolution")):
             return "history"
-        if any(marker in lowered for marker in ("math", "solve", "calculate", "algebra", "calculus", "equation")):
+        if any(
+            marker in lowered
+            for marker in (
+                "math", "solve", "calculate", "algebra", "calculus", "equation",
+                "quadratic", "percent", "%", "average", "mean", "median",
+                "sqrt", "square root", "factorial", "standard deviation",
+            )
+        ):
             return "math"
         if any(marker in lowered for marker in ("chemistry", "biology", "science", "experiment")):
             return "science"
@@ -146,15 +155,23 @@ class KnowledgeWorkService:
         return self._general_answer(instruction)
 
     def _math_answer(self, instruction: str) -> str:
-        equation = self._solve_linear_equation(instruction)
-        if equation:
-            return equation
+        # Intrinsic structured solvers (no model needed), most-specific first.
+        # Each returns "" when it does not apply, so we never emit a wrong answer.
+        for solver in (
+            self._solve_quadratic_equation,
+            self._solve_linear_equation,
+            self._solve_percentage,
+            self._solve_statistics,
+        ):
+            result = solver(instruction)
+            if result:
+                return result
         expression = self._extract_arithmetic_expression(instruction)
         if expression:
             try:
                 value = self._safe_eval(expression)
                 return f"Calculation:\n{expression} = {value:g}\n\nCheck the expression and units before using the result."
-            except ValueError:
+            except (ValueError, ZeroDivisionError, OverflowError):
                 pass
         return (
             "Math approach:\n"
@@ -163,6 +180,121 @@ class KnowledgeWorkService:
             "3. Solve step by step and verify by substitution.\n\n"
             f"Problem restated: {instruction}"
         )
+
+    _EQUATION_LEAD_IN = (
+        r"^(solve|calculate|compute|evaluate|find|simplify|what\s+is|what's|whats|"
+        r"the\s+equation|the\s+roots\s+of|roots\s+of|for)\s+"
+    )
+
+    def _solve_quadratic_equation(self, instruction: str) -> str:
+        cleaned = re.sub(self._EQUATION_LEAD_IN, "", instruction.strip(), flags=re.IGNORECASE)
+        text = cleaned.lower().replace(" ", "").replace("²", "^2").replace("**", "^")
+        if "=" not in text or ("x^2" not in text and "x2" not in text):
+            return ""
+        lhs, rhs = text.split("=", 1)
+        # Both sides must be pure polynomial-in-x expressions, else bail (no guess).
+        equation_chars = re.compile(r"[0-9x^.+\-*/]+")
+        if not (equation_chars.fullmatch(lhs) and equation_chars.fullmatch(rhs)):
+            return ""
+        try:
+            a_l, b_l, c_l = self._poly_coeffs(lhs)
+            a_r, b_r, c_r = self._poly_coeffs(rhs)
+        except ValueError:
+            return ""
+        a, b, c = a_l - a_r, b_l - b_r, c_l - c_r
+        if a == 0:
+            return ""  # not quadratic; let the linear solver try
+        disc = b * b - 4 * a * c
+        header = (
+            "Solve the quadratic equation:\n"
+            f"{a:g}x^2 + {b:g}x + {c:g} = 0\n"
+            f"discriminant = b^2 - 4ac = {b:g}^2 - 4·{a:g}·{c:g} = {disc:g}\n"
+        )
+        if disc > 0:
+            root1 = (-b + math.sqrt(disc)) / (2 * a)
+            root2 = (-b - math.sqrt(disc)) / (2 * a)
+            return header + (
+                f"x = (-b ± √discriminant) / 2a\n"
+                f"x = {root1:g}  or  x = {root2:g}\n\n"
+                f"Answer: x = {root1:g} or x = {root2:g}"
+            )
+        if disc == 0:
+            root = -b / (2 * a)
+            return header + f"x = -b / 2a = {root:g}\n\nAnswer: x = {root:g} (double root)"
+        real = -b / (2 * a)
+        imag = math.sqrt(-disc) / (2 * a)
+        return header + (
+            "The discriminant is negative, so the roots are complex:\n"
+            f"x = {real:g} ± {imag:g}i\n\n"
+            f"Answer: x = {real:g} + {imag:g}i or x = {real:g} - {imag:g}i"
+        )
+
+    @staticmethod
+    def _poly_coeffs(side: str) -> tuple[float, float, float]:
+        """Parse a polynomial in x into (a, b, c) for x^2, x, and constant terms.
+        Raises ValueError on any term that is not a clean x^2 / x / numeric term."""
+        a = b = c = 0.0
+        normalized = side.replace("-", "+-")
+        for term in normalized.split("+"):
+            if not term:
+                continue
+            if "x^2" in term or "x2" in term:
+                a += KnowledgeWorkService._coefficient_value(term.replace("x^2", "").replace("x2", ""))
+            elif "x" in term:
+                b += KnowledgeWorkService._coefficient_value(term.replace("x", ""))
+            else:
+                c += float(term)  # ValueError here aborts the parse -> no false answer
+        return a, b, c
+
+    def _solve_percentage(self, instruction: str) -> str:
+        lowered = instruction.lower()
+        of_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:%|percent)\s*of\s*(\d+(?:\.\d+)?)", lowered)
+        if of_match:
+            percent = float(of_match.group(1))
+            whole = float(of_match.group(2))
+            value = whole * percent / 100
+            return (
+                f"{percent:g}% of {whole:g}:\n"
+                f"{whole:g} × {percent:g}/100 = {value:g}\n\n"
+                f"Answer: {value:g}"
+            )
+        is_what_match = re.search(
+            r"(\d+(?:\.\d+)?)\s*is\s*what\s*percent\s*of\s*(\d+(?:\.\d+)?)", lowered
+        )
+        if is_what_match:
+            part = float(is_what_match.group(1))
+            whole = float(is_what_match.group(2))
+            if whole == 0:
+                return ""
+            percent = part / whole * 100
+            return (
+                f"{part:g} is what percent of {whole:g}:\n"
+                f"({part:g} / {whole:g}) × 100 = {percent:g}%\n\n"
+                f"Answer: {percent:g}%"
+            )
+        return ""
+
+    def _solve_statistics(self, instruction: str) -> str:
+        lowered = instruction.lower()
+        if "median" in lowered:
+            stat = "median"
+        elif "standard deviation" in lowered or "std dev" in lowered:
+            stat = "stdev"
+        elif "average" in lowered or "mean" in lowered:
+            stat = "mean"
+        else:
+            return ""
+        numbers = [float(token) for token in re.findall(r"-?\d+(?:\.\d+)?", lowered)]
+        if len(numbers) < 2:
+            return ""
+        if stat == "median":
+            value, label = statistics.median(numbers), "Median"
+        elif stat == "stdev":
+            value, label = statistics.pstdev(numbers), "Population standard deviation"
+        else:
+            value, label = statistics.fmean(numbers), "Mean (average)"
+        listed = ", ".join(f"{n:g}" for n in numbers)
+        return f"{label} of {listed}:\n{label} = {value:g}\n\nAnswer: {value:g}"
 
     def _physics_answer(self, instruction: str) -> str:
         lowered = instruction.lower()
@@ -302,15 +434,28 @@ class KnowledgeWorkService:
             return -1.0
         return float(text)
 
+    _FUNCTION_PATTERN = r"\b(sqrt|sin|cos|tan|log|ln|log10|exp|abs|factorial|floor|ceil|pow|round)\s*\("
+
     @staticmethod
     def _extract_arithmetic_expression(instruction: str) -> str:
-        match = re.search(r"([-+*/().\d\s]+)", instruction)
-        if not match:
+        text = instruction.strip().rstrip("?.! ")
+        text = re.sub(
+            r"^(what\s+is|what's|whats|calculate|compute|evaluate|how\s+much\s+is)\s+",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        ).strip()
+        text = text.replace("×", "*").replace("÷", "/").replace("^", "**")
+        if not re.search(r"\d", text):
             return ""
-        expression = match.group(1).strip()
-        if not re.search(r"\d", expression) or not re.search(r"[-+*/]", expression):
+        has_operator = re.search(r"[-+*/%]", text) is not None
+        has_function = re.search(KnowledgeWorkService._FUNCTION_PATTERN, text, re.IGNORECASE) is not None
+        if not (has_operator or has_function):
             return ""
-        return expression
+        # Restrict to a math-only charset so prose never reaches the parser.
+        if not re.fullmatch(r"[0-9a-z+\-*/%.,()\s]+", text, re.IGNORECASE):
+            return ""
+        return text
 
     def _safe_eval(self, expression: str) -> float:
         operators = {
@@ -318,10 +463,19 @@ class KnowledgeWorkService:
             ast.Sub: operator.sub,
             ast.Mult: operator.mul,
             ast.Div: operator.truediv,
+            ast.Mod: operator.mod,
             ast.Pow: operator.pow,
             ast.USub: operator.neg,
             ast.UAdd: operator.pos,
         }
+        functions = {
+            "sqrt": math.sqrt, "sin": math.sin, "cos": math.cos, "tan": math.tan,
+            "log": math.log, "ln": math.log, "log10": math.log10, "exp": math.exp,
+            "abs": abs, "floor": math.floor, "ceil": math.ceil,
+            "factorial": lambda value: math.factorial(int(value)),
+            "pow": pow, "round": round,
+        }
+        constants = {"pi": math.pi, "e": math.e, "tau": math.tau}
 
         def evaluate(node: ast.AST) -> float:
             if isinstance(node, ast.Expression):
@@ -332,6 +486,18 @@ class KnowledgeWorkService:
                 return operators[type(node.op)](evaluate(node.left), evaluate(node.right))
             if isinstance(node, ast.UnaryOp) and type(node.op) in operators:
                 return operators[type(node.op)](evaluate(node.operand))
+            if isinstance(node, ast.Name) and node.id in constants:
+                return float(constants[node.id])
+            # Only whitelisted function NAMES are callable — no attributes, no
+            # arbitrary names, no keywords. There is no code-execution surface.
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in functions
+                and not node.keywords
+            ):
+                args = [evaluate(arg) for arg in node.args]
+                return float(functions[node.func.id](*args))
             raise ValueError("unsupported expression")
 
         parsed = ast.parse(expression, mode="eval")

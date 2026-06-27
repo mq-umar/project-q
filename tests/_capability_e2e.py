@@ -65,14 +65,18 @@ def main() -> int:
         assert resp.reply and isinstance(resp.reply, str)
         return resp.reply
 
-    @check("knowledge.answer: math problem")
+    @check("knowledge.answer: math (linear/quadratic/percent/sqrt, intrinsic)")
     def _():
-        out = app.tools.get("knowledge.answer").execute(
-            {"instruction": "solve 2x + 3 = 11", "depth": "standard"}
-        )
-        text = str(out)
-        assert "4" in text  # x = 4
-        return out
+        kn = app.tools.get("knowledge.answer")
+        linear = str(kn.execute({"instruction": "solve 2x + 3 = 11", "depth": "standard"}))
+        assert "4" in linear  # x = 4
+        quad = str(kn.execute({"instruction": "solve x^2 - 5x + 6 = 0", "depth": "standard"}))
+        assert "x = 3" in quad and "x = 2" in quad
+        pct = str(kn.execute({"instruction": "what is 15% of 240", "depth": "standard"}))
+        assert "36" in pct
+        sq = str(kn.execute({"instruction": "calculate sqrt(144) + 2^3", "depth": "standard"}))
+        assert "20" in sq
+        return "linear=4, quadratic={3,2}, 15%of240=36, sqrt(144)+2^3=20"
 
     @check("knowledge.answer: science/explanatory")
     def _():
