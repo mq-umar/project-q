@@ -321,6 +321,9 @@ class ProjectQHandler(BaseHTTPRequestHandler):
             ("GET", r"^/api/plugins$", self._list_plugins),
             ("POST", r"^/api/plugins$", self._install_plugin),
             ("DELETE", r"^/api/plugins/([^/]+)$", self._remove_plugin),
+            ("GET", r"^/api/mcp/servers$", self._list_mcp_servers),
+            ("POST", r"^/api/mcp/servers$", self._install_mcp_server),
+            ("DELETE", r"^/api/mcp/servers/([^/]+)$", self._remove_mcp_server),
             ("GET", r"^/api/secrets$", self._list_secrets),
             ("POST", r"^/api/secrets$", self._upsert_secret),
             ("DELETE", r"^/api/secrets/([^/]+)$", self._delete_secret),
@@ -523,6 +526,7 @@ class ProjectQHandler(BaseHTTPRequestHandler):
                 "/api/settings",
                 "/api/tools",
                 "/api/plugins",
+                "/api/mcp",
                 "/api/secrets",
                 "/api/dispatches",
                 "/api/diagnostics",
@@ -1678,6 +1682,33 @@ class ProjectQHandler(BaseHTTPRequestHandler):
         removed = self.app.plugins.remove(plugin_id)
         self.app.tools.tools.pop(f"plugin.{plugin_id}", None)
         self._json_response({"deleted": plugin_id, "removed": removed})
+
+    def _list_mcp_servers(self, _args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
+        self._json_response({"items": self.app.mcp.list_servers()})
+
+    def _install_mcp_server(self, _args: tuple[str, ...], body: dict[str, Any], _query: dict[str, Any]) -> None:
+        # mcp.install_server raises ValueError on validation/collision -> 400 via _route_api.
+        config = self.app.mcp.install_server(body)
+        # Best-effort hot-register ONLY the freshly installed server's tools (no
+        # re-spawn of already-connected servers). A connect failure must never
+        # fail the install (already persisted).
+        try:
+            from project_q.services.mcp_client import MCPServerConfig
+            for mcp_tool in self.app.mcp.connect_server(MCPServerConfig.model_validate(config)):
+                self.app.tools.register(mcp_tool)
+        except Exception:  # noqa: BLE001 - registration is best-effort
+            pass
+        self._json_response(config, status=HTTPStatus.CREATED)
+
+    def _remove_mcp_server(self, args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
+        server_id = args[0]
+        removed = self.app.mcp.remove_server(server_id)
+        self.app.mcp.disconnect_server(server_id)  # close the live subprocess + reader thread
+        # Drop every mcp.<id>.* tool from the live registry.
+        prefix = f"mcp.{server_id}."
+        for tool_id in [tid for tid in self.app.tools.tools if tid.startswith(prefix)]:
+            self.app.tools.tools.pop(tool_id, None)
+        self._json_response({"deleted": server_id, "removed": removed})
 
     def _list_secrets(self, _args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
         self._json_response({"items": self.app.vault.list_secret_names()})

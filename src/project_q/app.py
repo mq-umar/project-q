@@ -107,6 +107,7 @@ class ProjectQApplication:
     dispatches: ProjectDispatchService
     tools: ToolRegistry
     plugins: Any
+    mcp: Any
     suggestions: Any
     experiments: Any
     scheduler: Any
@@ -153,6 +154,12 @@ class ProjectQApplication:
 
     def shutdown_services(self) -> None:
         self.workflow_orchestrator.stop()
+        mcp = getattr(self, "mcp", None)
+        if mcp is not None:
+            try:
+                mcp.close_all()
+            except Exception:  # noqa: BLE001
+                pass
         if self.relay_bridge is not None:
             self.relay_bridge.stop()
         if self.scheduler is not None:
@@ -214,6 +221,17 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
         workspace_root=resolved_config.workspace_root,
         settings_service=settings,
     )
+    # Reuse the MCPManager the ToolRegistry already built (it owns the live
+    # connections + registered mcp.* tools); fall back to a fresh, audit-wired
+    # manager so the /api/mcp routes always have a usable handle even when no
+    # servers are configured.
+    from project_q.services.mcp_client import MCPManager
+
+    mcp = getattr(tools, "mcp_manager", None)
+    if mcp is None:
+        mcp = MCPManager(resolved_config.data_root, audit_service=audit)
+    else:
+        mcp.audit_service = audit
     tools.register(WebsiteGeneratorTool(resolved_config.workspace_root, dispatch_service=dispatches))
     tools.register(ProjectGeneratorTool(resolved_config.workspace_root, dispatch_service=dispatches))
     tools.register(ProjectPlanBuildTool(dispatches))
@@ -399,6 +417,7 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
         dispatches=dispatches,
         tools=tools,
         plugins=plugins,
+        mcp=mcp,
         suggestions=suggestions,
         experiments=experiments,
         scheduler=scheduler,

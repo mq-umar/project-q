@@ -154,6 +154,20 @@ class ToolRegistry:
         except Exception:  # noqa: BLE001 - isolation: never break startup
             pass
 
+        # External MCP servers (conditionally + best-effort loaded). A broken or
+        # hostile MCP config / server must NEVER affect built-in tools, plugins,
+        # or app startup, and must never hang (reader-thread + queue + timeout).
+        self.mcp_manager = None
+        try:
+            from project_q.services.mcp_client import MCPManager
+
+            mcp_manager = MCPManager(data_root)
+            for mcp_tool in mcp_manager.connect_all():
+                self.tools[mcp_tool.definition.tool_id] = mcp_tool
+            self.mcp_manager = mcp_manager
+        except Exception:  # noqa: BLE001 - isolation: never break startup
+            pass
+
     def describe_all(self) -> list[dict[str, Any]]:
         return [
             {
