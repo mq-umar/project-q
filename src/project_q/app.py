@@ -242,6 +242,10 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
             GoogleDriveListFilesTool,
             LinearCreateIssueTool,
             LinearListIssuesTool,
+            MicrosoftListDriveTool,
+            MicrosoftListEventsTool,
+            MicrosoftListMailTool,
+            MicrosoftSendMailTool,
             NotionCreatePageTool,
             NotionSearchTool,
             SlackListChannelsTool,
@@ -264,6 +268,10 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
         tools.register(GoogleCalendarListEventsTool(vault, settings))
         tools.register(GoogleCalendarCreateEventTool(vault, settings))
         tools.register(GoogleDriveListFilesTool(vault, settings))
+        tools.register(MicrosoftListMailTool(vault, settings))
+        tools.register(MicrosoftListEventsTool(vault, settings))
+        tools.register(MicrosoftListDriveTool(vault, settings))
+        tools.register(MicrosoftSendMailTool(vault, settings))
     except Exception:
         pass
     approvals = ApprovalService(db, vault, tools, policy, audit, sync)

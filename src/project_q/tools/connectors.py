@@ -65,6 +65,13 @@ _GOOGLE_CLIENT_SECRET_SECRET = "google_client_secret"
 _GOOGLE_REFRESH_TOKEN_SECRET = "google_refresh_token"
 _GCAL_BASE = "https://www.googleapis.com/calendar/v3"
 _GDRIVE_BASE = "https://www.googleapis.com/drive/v3"
+# ── Microsoft Graph OAuth2 (refresh-token grant) ──────────────────────────────
+_MS_TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+_MS_CLIENT_ID_SECRET = "ms_client_id"
+_MS_CLIENT_SECRET_SECRET = "ms_client_secret"
+_MS_REFRESH_TOKEN_SECRET = "ms_refresh_token"
+_MS_SCOPE = "https://graph.microsoft.com/.default offline_access"
+_MSGRAPH_BASE = "https://graph.microsoft.com/v1.0"
 # A GitHub repo must be exactly owner/name — reject extra path/query/CRLF so an
 # owner-supplied value cannot alter the request line (confused-deputy hardening).
 _REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
@@ -86,6 +93,10 @@ __all__ = [
     "GoogleCalendarListEventsTool",
     "GoogleCalendarCreateEventTool",
     "GoogleDriveListFilesTool",
+    "MicrosoftListMailTool",
+    "MicrosoftListEventsTool",
+    "MicrosoftListDriveTool",
+    "MicrosoftSendMailTool",
 ]
 
 
@@ -136,8 +147,12 @@ def _default_transport(
         return {"error": "non-object response", "status_code": int(exc.code)}
     except (urllib.error.URLError, OSError, ValueError) as exc:
         return {"error": str(exc)}
+    text = raw.decode("utf-8", errors="replace")
+    if not text.strip():
+        # 2xx with an empty body (e.g. send-mail 202, close-task 204) — success.
+        return {"status": "ok"}
     try:
-        return json.loads(raw.decode("utf-8", errors="replace"))
+        return json.loads(text)
     except (json.JSONDecodeError, ValueError) as exc:
         return {"error": f"invalid JSON response: {exc}"}
 
@@ -602,3 +617,130 @@ class GoogleDriveListFilesTool(_GoogleOAuthBase):
             return err
         client = _BearerHttpClient(access_token, _GDRIVE_BASE, transport=self.transport)
         return client.request("GET", "/files")
+
+
+# ── Microsoft Graph connectors (OAuth2 refresh-token) ─────────────────────────
+class _MicrosoftOAuthBase(_ConnectorBase):
+    """Mints a short-lived Microsoft Graph access token from a stored refresh
+    token. Mirrors _GoogleOAuthBase: client_secret / refresh_token / access_token
+    NEVER appear in any returned dict or error string; missing secrets -> {error}
+    with no network call; failures collapse to a fixed secret-free message."""
+
+    def _ms_access_token(self) -> tuple[str | None, dict | None]:
+        try:
+            client_id = self.vault.get_secret(_MS_CLIENT_ID_SECRET)
+            client_secret = self.vault.get_secret(_MS_CLIENT_SECRET_SECRET)
+            refresh_token = self.vault.get_secret(_MS_REFRESH_TOKEN_SECRET)
+        except KeyError:
+            return None, {
+                "error": (
+                    "microsoft OAuth not configured in the vault (need "
+                    "ms_client_id, ms_client_secret, ms_refresh_token)"
+                )
+            }
+        except Exception:  # noqa: BLE001 - never raise out of execute()
+            return None, {"error": "microsoft token refresh failed"}
+        try:
+            form = urllib.parse.urlencode(
+                {
+                    "grant_type": "refresh_token",
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "refresh_token": refresh_token,
+                    "scope": _MS_SCOPE,
+                }
+            ).encode("utf-8")
+            headers = {_strip_crlf("Content-Type"): _strip_crlf("application/x-www-form-urlencoded")}
+            transport = self.transport or _default_transport
+            result = transport(_MS_TOKEN_URL, "POST", headers, form, _HTTP_TIMEOUT_SECONDS)
+            if isinstance(result, dict):
+                access_token = result.get("access_token")
+                if isinstance(access_token, str) and access_token:
+                    return access_token, None
+            return None, {"error": "microsoft token refresh failed"}
+        except Exception:  # noqa: BLE001 - never leak an exception carrying a secret
+            return None, {"error": "microsoft token refresh failed"}
+
+    def _graph(self, access_token: str) -> "_BearerHttpClient":
+        return _BearerHttpClient(access_token, _MSGRAPH_BASE, transport=self.transport)
+
+
+class MicrosoftListMailTool(_MicrosoftOAuthBase):
+    definition = ToolDefinition(
+        tool_id="msgraph.list_mail",
+        name="Microsoft Graph: List Mail",
+        description="List recent Outlook messages.",
+        tier=0,
+    )
+
+    def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._network_local_only():
+            return {"error": "network_policy=local_only blocks msgraph.list_mail"}
+        access_token, err = self._ms_access_token()
+        if err is not None:
+            return err
+        return self._graph(access_token).request("GET", "/me/messages?$top=20")
+
+
+class MicrosoftListEventsTool(_MicrosoftOAuthBase):
+    definition = ToolDefinition(
+        tool_id="msgraph.list_events",
+        name="Microsoft Graph: List Calendar Events",
+        description="List upcoming Outlook calendar events.",
+        tier=0,
+    )
+
+    def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._network_local_only():
+            return {"error": "network_policy=local_only blocks msgraph.list_events"}
+        access_token, err = self._ms_access_token()
+        if err is not None:
+            return err
+        return self._graph(access_token).request("GET", "/me/events?$top=20")
+
+
+class MicrosoftListDriveTool(_MicrosoftOAuthBase):
+    definition = ToolDefinition(
+        tool_id="msgraph.list_drive",
+        name="Microsoft Graph: List OneDrive",
+        description="List items in the root of the owner's OneDrive.",
+        tier=0,
+    )
+
+    def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._network_local_only():
+            return {"error": "network_policy=local_only blocks msgraph.list_drive"}
+        access_token, err = self._ms_access_token()
+        if err is not None:
+            return err
+        return self._graph(access_token).request("GET", "/me/drive/root/children")
+
+
+class MicrosoftSendMailTool(_MicrosoftOAuthBase):
+    definition = ToolDefinition(
+        tool_id="msgraph.send_mail",
+        # Sending email is an external write — PRD Email Send = Tier 2.
+        name="Microsoft Graph: Send Mail",
+        description="Send an email. payload {to, subject, body}.",
+        tier=2,
+    )
+
+    def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._network_local_only():
+            return {"error": "network_policy=local_only blocks msgraph.send_mail"}
+        payload = payload or {}
+        to = str(payload.get("to", "")).strip()
+        if not to:
+            return {"error": "to is required"}
+        access_token, err = self._ms_access_token()
+        if err is not None:
+            return err
+        body = {
+            "message": {
+                "subject": str(payload.get("subject", "")),
+                "body": {"contentType": "Text", "content": str(payload.get("body", ""))},
+                "toRecipients": [{"emailAddress": {"address": to}}],
+            },
+            "saveToSentItems": True,
+        }
+        return self._graph(access_token).request("POST", "/me/sendMail", body)

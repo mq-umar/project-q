@@ -23,6 +23,10 @@ _INTERNET_TOOLS: frozenset[str] = frozenset({
     "google_calendar.list_events",
     "google_calendar.create_event",
     "google_drive.list_files",
+    "msgraph.list_mail",
+    "msgraph.list_events",
+    "msgraph.list_drive",
+    "msgraph.send_mail",
 })
 
 
