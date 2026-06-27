@@ -48,12 +48,18 @@ Project Q is a personal AI executive assistant: a Windows-first local agent with
 - SwiftUI companion chat with direct provider-token streaming and encrypted-relay fallback
 - SwiftUI approvals with biometric signatures, routines, task/agent activity, memory editing, quick capture, audit review, and emergency stop
 - App Intents, widget, share extension, encrypted offline queue/cache, bounded background refresh, and APNs registration
+- Owner-installable, declarative, tier-gated plugin/skill system (HTTP/shell manifests — never arbitrary code) hot-registered into the live tool registry
+- Bearer-token third-party connectors with vault-sourced tokens, tier-mapped per the PRD connector table: GitHub (repos/issues/create-issue), Slack (channels/post-message), Notion (search/create-page), Todoist (list/create-task)
+- Embedding-based hybrid memory recall (Ollama `/api/embeddings` with silent FTS5 fallback), source-memory provenance fields (`source_type`/`trust_level`/`inferred`/`evidence`), and owner-promotable procedural playbooks distilled from the reflection loop
+- Dashboard panels for Plugins, Playbooks, and Connector readiness; §12.1 Approval Policy / Aggression Level / Voice Mode profiles enforced in the policy engine
+- 2026-06 security hardening: owner-auth session reuse/GC + optional PBKDF2 passphrase, Zone-3 trust-envelope provenance, Tier-3 auto-approval lockout, secrets-vault scheme tagging (see `docs/AUDIT_RESPONSE_2026-06-21.md`)
 
 ## What Is Not Implemented Yet
 
 - Wake-word handling and background listening outside the active dashboard
 - Continuous screen monitoring, richer visual understanding, and broader Windows UI Automation workflows
-- Real connector integrations for sending/syncing mail, calendar, Slack, cloud drives, and Notes
+- OAuth-based connectors (Google Drive/Calendar/Gmail, etc.) — the bearer-token connectors above exist, but Google-style OAuth authorization flows are not yet wired
+- AES-256 full-database encryption at rest (PRD §9.6) — needs SQLCipher; today only the secrets vault is DPAPI-encrypted
 - Live iOS build/signing and device validation on macOS with Xcode
 - Live APNs delivery validation with the owner's Apple credentials and physical device
 - Packaged MSIX desktop shell
