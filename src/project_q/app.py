@@ -45,6 +45,8 @@ from project_q.services.tasks import TaskService
 from project_q.services.training import TrainingService
 from project_q.services.trust import TrustBoundaryService
 from project_q.services.vault import VaultService
+from project_q.services.suggestions import SuggestionsService
+from project_q.services.ab_testing import ExperimentService
 from project_q.services.voice import VoiceService
 from project_q.services.workflow_orchestrator import WorkflowOrchestratorService
 from project_q.services.workflow_process import SubprocessNodeBackend
@@ -104,6 +106,9 @@ class ProjectQApplication:
     training: TrainingService
     dispatches: ProjectDispatchService
     tools: ToolRegistry
+    plugins: Any
+    suggestions: Any
+    experiments: Any
     scheduler: Any
     relay_provisioner: Any
     relay_bridge: Any
@@ -170,10 +175,20 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
     artifacts = ArtifactValidationService()
     settings = SettingsService(db)
     policy = PolicyService(settings)
+    # PRD §9.6: expire raw screenshot/OCR artifacts older than the retention window.
+    try:
+        from project_q.services.retention import prune_expired_artifacts
+        prune_expired_artifacts(
+            resolved_config.data_root / "windows_artifacts",
+            retention_hours=int(settings.get_all().get("artifact_retention_hours", 24)),
+        )
+    except Exception:  # noqa: BLE001 - maintenance must never block startup
+        pass
     memory = MemoryService(db, settings, sync)
     tasks = TaskService(db, sync)
     agents = AgentService(db, sync)
     routines = RoutineService(db, sync)
+    memory.set_routine_service(routines)
     workflows = WorkflowService(db, sync)
     control = ControlService(settings, audit, owner_auth=owner_auth, sync_service=sync)
     vault = VaultService(db)
@@ -191,6 +206,14 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
     knowledge = KnowledgeWorkService(settings, audit)
     dispatches = ProjectDispatchService(db, resolved_config.workspace_root)
     tools = ToolRegistry(resolved_config.workspace_root, resolved_config.data_root, settings)
+    from project_q.services.plugins import PluginManager
+
+    plugins = PluginManager(
+        resolved_config.data_root / "plugins",
+        audit_service=audit,
+        workspace_root=resolved_config.workspace_root,
+        settings_service=settings,
+    )
     tools.register(WebsiteGeneratorTool(resolved_config.workspace_root, dispatch_service=dispatches))
     tools.register(ProjectGeneratorTool(resolved_config.workspace_root, dispatch_service=dispatches))
     tools.register(ProjectPlanBuildTool(dispatches))
@@ -219,6 +242,51 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
     tools.register(SecurityScanExternalContentTool(trust))
     research = WebResearchService(tools.get("browser.inspect_page"), trust, audit)
     tools.register(ResearchWebTool(research))
+    # Bearer-token connectors (GitHub/Slack). Registered post-construction so they
+    # receive the live vault + settings. Wrapped so a connector error can never
+    # break app startup (same isolation philosophy as the plugins/git/outlook loads).
+    try:
+        from project_q.tools.connectors import (
+            GitHubCreateIssueTool,
+            GitHubListIssuesTool,
+            GitHubListReposTool,
+            GoogleCalendarCreateEventTool,
+            GoogleCalendarListEventsTool,
+            GoogleDriveListFilesTool,
+            LinearCreateIssueTool,
+            LinearListIssuesTool,
+            MicrosoftListDriveTool,
+            MicrosoftListEventsTool,
+            MicrosoftListMailTool,
+            MicrosoftSendMailTool,
+            NotionCreatePageTool,
+            NotionSearchTool,
+            SlackListChannelsTool,
+            SlackPostMessageTool,
+            TodoistCreateTaskTool,
+            TodoistListTasksTool,
+        )
+
+        tools.register(GitHubListReposTool(vault, settings))
+        tools.register(GitHubListIssuesTool(vault, settings))
+        tools.register(GitHubCreateIssueTool(vault, settings))
+        tools.register(SlackListChannelsTool(vault, settings))
+        tools.register(SlackPostMessageTool(vault, settings))
+        tools.register(NotionSearchTool(vault, settings))
+        tools.register(NotionCreatePageTool(vault, settings))
+        tools.register(TodoistListTasksTool(vault, settings))
+        tools.register(TodoistCreateTaskTool(vault, settings))
+        tools.register(LinearListIssuesTool(vault, settings))
+        tools.register(LinearCreateIssueTool(vault, settings))
+        tools.register(GoogleCalendarListEventsTool(vault, settings))
+        tools.register(GoogleCalendarCreateEventTool(vault, settings))
+        tools.register(GoogleDriveListFilesTool(vault, settings))
+        tools.register(MicrosoftListMailTool(vault, settings))
+        tools.register(MicrosoftListEventsTool(vault, settings))
+        tools.register(MicrosoftListDriveTool(vault, settings))
+        tools.register(MicrosoftSendMailTool(vault, settings))
+    except Exception:
+        pass
     approvals = ApprovalService(db, vault, tools, policy, audit, sync)
     context = ContextService(db, memory, tasks, agents, routines, settings, tools, resolved_config.workspace_root, trust)
     reasoner = ReasonerService(settings, vault, audit)
@@ -280,6 +348,14 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
             vault_service=vault,
         )
 
+    # Pin collision detection against the FULLY-registered tool set (built-ins
+    # plus the post-construction tools.register(...) additions above).
+    plugins.builtin_tool_ids = {
+        tid for tid in tools.tools.keys() if not tid.startswith("plugin.")
+    }
+
+    suggestions = SuggestionsService()
+    experiments = ExperimentService(db)
     application = ProjectQApplication(
         config=resolved_config,
         started_at=started_at,
@@ -322,6 +398,9 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
         training=training,
         dispatches=dispatches,
         tools=tools,
+        plugins=plugins,
+        suggestions=suggestions,
+        experiments=experiments,
         scheduler=scheduler,
         relay_provisioner=relay_provisioner,
         relay_bridge=None,

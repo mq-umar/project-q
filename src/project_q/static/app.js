@@ -185,6 +185,8 @@ const state = {
   templates: [],
   metrics: null,
   trainingJobs: [],
+  plugins: [],
+  playbooks: [],
 };
 
 const els = {
@@ -322,12 +324,97 @@ const els = {
   gitWorkspace: document.getElementById("gitWorkspace"),
   // Memory prune
   memoryPruneButton: document.getElementById("memoryPruneButton"),
+  // Plugins
+  pluginForm: document.getElementById("pluginForm"),
+  pluginManifest: document.getElementById("pluginManifest"),
+  pluginList: document.getElementById("pluginList"),
+  // Playbooks
+  playbookList: document.getElementById("playbookList"),
+  playbookRefreshButton: document.getElementById("playbookRefreshButton"),
+  // Connectors
+  connectorList: document.getElementById("connectorList"),
 };
 
 let activeVoiceRecognition = null;
 let streamedSpeechBuffer = "";
 let activePairingURI = "";
 let chatStreaming = false;
+
+// ── Voice orb (audio-reactive 2D canvas, see orb.js) ──────────────────────
+// Best-effort: if orb.js failed to load or the canvas is missing, voiceOrb is
+// a harmless no-op so nothing here can ever throw.
+let voiceOrb = { setLevel() {}, setState() {}, start() {}, stop() {} };
+let orbAnalyser = null; // Web Audio AnalyserNode when a real mic stream exists
+let orbFreqData = null;
+let orbSyntheticTimer = 0;
+
+(function initVoiceOrb() {
+  try {
+    const canvas = document.getElementById("voiceOrb");
+    if (canvas && typeof window.createVoiceOrb === "function") {
+      voiceOrb = window.createVoiceOrb(canvas) || voiceOrb;
+      voiceOrb.setState("idle");
+      voiceOrb.start();
+    }
+  } catch (_) {
+    /* never let the orb break the dashboard */
+  }
+})();
+
+// Feed a real amplitude from a mic MediaStream when one is readily available.
+function attachOrbAnalyser(stream) {
+  try {
+    if (!stream || orbAnalyser) return;
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const audioCtx = new AudioCtx();
+    const source = audioCtx.createMediaStreamSource(stream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.8;
+    source.connect(analyser);
+    orbAnalyser = analyser;
+    orbFreqData = new Uint8Array(analyser.frequencyBinCount);
+  } catch (_) {
+    orbAnalyser = null;
+  }
+}
+
+function detachOrbAnalyser() {
+  orbAnalyser = null;
+  orbFreqData = null;
+}
+
+// Drive the orb level: prefer real mic amplitude, else a synthetic pulse while
+// a chat response is streaming. Runs once per animation frame and is fully
+// guarded so a missing Web Audio API never breaks anything.
+(function driveVoiceOrb() {
+  function tick() {
+    try {
+      if (orbAnalyser && orbFreqData) {
+        orbAnalyser.getByteFrequencyData(orbFreqData);
+        let sum = 0;
+        const n = Math.min(32, orbFreqData.length);
+        for (let i = 0; i < n; i++) sum += orbFreqData[i];
+        voiceOrb.setLevel(sum / (n * 255));
+      } else if (chatStreaming) {
+        // synthetic amplitude: a lively wobble while Q is "speaking"
+        orbSyntheticTimer += 0.12;
+        const v =
+          0.35 +
+          Math.abs(Math.sin(orbSyntheticTimer)) * 0.4 +
+          Math.random() * 0.12;
+        voiceOrb.setLevel(Math.min(1, v));
+      } else {
+        voiceOrb.setLevel(0);
+      }
+    } catch (_) {
+      /* ignore — keep the loop alive */
+    }
+    window.requestAnimationFrame(tick);
+  }
+  if (window.requestAnimationFrame) window.requestAnimationFrame(tick);
+})();
 
 function voiceOutputEnabled() {
   return Boolean(state.settings?.voice_enabled);
@@ -551,6 +638,8 @@ async function refreshAll() {
       templatesResult,
       metricsResult,
       trainingJobsResult,
+      pluginsResult,
+      playbooksResult,
     ] = await Promise.all([
       fetchJSON("/api/status"),
       fetchJSON("/api/conversations?limit=50"),
@@ -573,6 +662,8 @@ async function refreshAll() {
       fetchJSON("/api/agents/templates"),
       fetchJSON("/api/metrics"),
       fetchJSON("/api/training/jobs"),
+      fetchJSON("/api/plugins"),
+      fetchJSON("/api/memories/playbooks"),
     ]);
 
     state.status = status;
@@ -596,6 +687,8 @@ async function refreshAll() {
     state.templates = templatesResult.items || [];
     state.metrics = metricsResult;
     state.trainingJobs = trainingJobsResult.items || [];
+    state.plugins = pluginsResult.items || [];
+    state.playbooks = playbooksResult.playbooks || [];
     await refreshProviderModels(settings);
     render();
   } catch (error) {
@@ -865,6 +958,9 @@ function render() {
 
   renderTemplates();
   renderMetrics();
+  renderPlugins();
+  renderPlaybooks();
+  renderConnectors();
 
   els.toolSelect.innerHTML = state.tools
     .map((tool) => `<option value="${tool.tool_id}">${tool.tool_id} - Tier ${tool.tier}</option>`)
@@ -1646,6 +1742,7 @@ els.chatForm.addEventListener("submit", async (event) => {
   const message = els.chatInput.value.trim();
   if (!message) return;
   chatStreaming = true;
+  try { voiceOrb.setState("speaking"); } catch (_) {}
   const submitBtn = els.chatForm.querySelector('button[type="submit"]');
   if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = "Sending…"; }
 
@@ -1708,6 +1805,7 @@ els.chatForm.addEventListener("submit", async (event) => {
     showToast(error.message, "error");
   } finally {
     chatStreaming = false;
+    try { voiceOrb.setState("idle"); } catch (_) {}
     if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = "Send ↵"; }
     els.chatApproval.checked = false;
     // Re-sync from server to pick up canonical IDs and any tool side-effects
@@ -2239,12 +2337,27 @@ function startStreamingRecognition(RecognitionConstructor) {
   recognition.onend = () => {
     activeVoiceRecognition = null;
     setVoiceRecordingState(false);
+    detachOrbAnalyser();
+    try { voiceOrb.setState(chatStreaming ? "speaking" : "idle"); } catch (_) {}
     if (els.chatInput) els.chatInput.focus();
   };
 
   cancelVoiceOutput();
   activeVoiceRecognition = recognition;
   setVoiceRecordingState(true);
+  try { voiceOrb.setState("listening"); } catch (_) {}
+  // Best-effort: feed a real mic amplitude to the orb if permission is granted.
+  // Recognition still works regardless of whether this resolves.
+  try {
+    if (navigator.mediaDevices?.getUserMedia) {
+      navigator.mediaDevices
+        .getUserMedia({ audio: true })
+        .then(attachOrbAnalyser)
+        .catch(() => {});
+    }
+  } catch (_) {
+    /* ignore */
+  }
   recognition.start();
 }
 
@@ -2488,6 +2601,177 @@ function renderMetrics() {
         </div>
       </article>`).join('');
   }
+}
+
+// ── Plugins ───────────────────────────────────────────────────────────────
+function renderPlugins() {
+  if (!els.pluginList) return;
+  if (!state.plugins.length) {
+    els.pluginList.innerHTML = '<div class="empty-state">No plugins installed. Paste a manifest to install one.</div>';
+    return;
+  }
+  els.pluginList.innerHTML = renderItems(state.plugins, (plugin) => `
+    <strong>${escapeHTML(plugin.name || plugin.id)}</strong>
+    <div>${escapeHTML(plugin.description || "No description")}</div>
+    <div class="meta-row">
+      <span class="tag">${escapeHTML(plugin.id)}</span>
+      <span class="tag">${escapeHTML(plugin.type || "")}</span>
+      <span class="tag tier-tag-${escapeHTML(String(plugin.tier))}">Tier ${escapeHTML(String(plugin.tier))}</span>
+    </div>
+    <div class="list-actions">
+      <button type="button" class="danger-btn-mini plugin-remove-btn" data-plugin-id="${escapeHTML(plugin.id)}">Remove</button>
+    </div>
+  `);
+}
+
+if (els.pluginForm) {
+  els.pluginForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const raw = els.pluginManifest.value.trim();
+    if (!raw) return;
+    let manifest;
+    try {
+      manifest = JSON.parse(raw);
+    } catch (error) {
+      showToast(`Invalid manifest JSON: ${error.message}`, "error");
+      return;
+    }
+    const submitBtn = els.pluginForm.querySelector('button[type="submit"]');
+    if (submitBtn) submitBtn.disabled = true;
+    try {
+      const result = await fetchJSON("/api/plugins", {
+        method: "POST",
+        body: JSON.stringify(manifest),
+      });
+      els.toolResult.textContent = JSON.stringify(result, null, 2);
+      showToast(`Plugin installed: ${result.tool_id || result.name || "ok"}`, "success");
+      els.pluginManifest.value = "";
+      await refreshAll();
+    } catch (error) {
+      els.toolResult.textContent = error.message;
+      showToast(error.message, "error");
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
+    }
+  });
+}
+
+if (els.pluginList) {
+  els.pluginList.addEventListener("click", async (event) => {
+    const removeBtn = event.target.closest(".plugin-remove-btn");
+    if (!removeBtn) return;
+    const pluginId = removeBtn.dataset.pluginId;
+    if (!pluginId) return;
+    if (!window.confirm(`Remove plugin "${pluginId}"?`)) return;
+    removeBtn.disabled = true;
+    try {
+      await fetchJSON(`/api/plugins/${encodeURIComponent(pluginId)}`, { method: "DELETE" });
+      showToast(`Plugin removed: ${pluginId}`, "info");
+      await refreshAll();
+    } catch (error) {
+      showToast(error.message, "error");
+      removeBtn.disabled = false;
+    }
+  });
+}
+
+// ── Playbooks ─────────────────────────────────────────────────────────────
+function renderPlaybooks() {
+  if (!els.playbookList) return;
+  if (!state.playbooks.length) {
+    els.playbookList.innerHTML = '<div class="empty-state">No playbook candidates yet. Reflection on completed tasks produces these.</div>';
+    return;
+  }
+  els.playbookList.innerHTML = renderItems(state.playbooks, (playbook) => {
+    const sequence = (playbook.tool_sequence || []).map((step) => escapeHTML(String(step))).join(" → ") || "no tools";
+    const confidence = Number(playbook.confidence);
+    return `
+      <strong>${escapeHTML(playbook.text || "Playbook candidate")}</strong>
+      <div class="playbook-sequence">${sequence}</div>
+      <div class="meta-row">
+        ${Number.isFinite(confidence) ? `<span class="tag">${Math.round(confidence * 100)}%</span>` : ""}
+        ${playbook.created_at ? `<span>${escapeHTML(playbook.created_at)}</span>` : ""}
+      </div>
+      <div class="list-actions">
+        <button type="button" class="promote-playbook-btn btn-sm" data-memory-id="${escapeHTML(playbook.memory_id)}">Promote</button>
+      </div>
+    `;
+  });
+}
+
+if (els.playbookRefreshButton) {
+  els.playbookRefreshButton.addEventListener("click", async () => {
+    try {
+      const data = await fetchJSON("/api/memories/playbooks");
+      state.playbooks = data.playbooks || [];
+      renderPlaybooks();
+    } catch (error) {
+      showToast(error.message, "error");
+    }
+  });
+}
+
+if (els.playbookList) {
+  els.playbookList.addEventListener("click", async (event) => {
+    const promoteBtn = event.target.closest(".promote-playbook-btn");
+    if (!promoteBtn) return;
+    const memoryId = promoteBtn.dataset.memoryId;
+    if (!memoryId) return;
+    promoteBtn.disabled = true;
+    promoteBtn.textContent = "Promoting…";
+    try {
+      const result = await fetchJSON(`/api/memories/playbooks/${encodeURIComponent(memoryId)}/promote`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      els.toolResult.textContent = JSON.stringify(result, null, 2);
+      showToast("Playbook promoted to a trusted routine", "success");
+      await refreshAll();
+    } catch (error) {
+      showToast(error.message, "error");
+      promoteBtn.disabled = false;
+      promoteBtn.textContent = "Promote";
+    }
+  });
+}
+
+// ── Connectors ────────────────────────────────────────────────────────────
+const CONNECTOR_SERVICES = [
+  { service: "github", secret: "github_token" },
+  { service: "slack", secret: "slack_bot_token" },
+  { service: "notion", secret: "notion_token" },
+  { service: "todoist", secret: "todoist_token" },
+];
+
+function renderConnectors() {
+  if (!els.connectorList) return;
+  const secretNames = new Set((state.secrets || []).map((secret) => secret.name));
+  const rows = CONNECTOR_SERVICES.map(({ service, secret }) => {
+    const tools = (state.tools || []).filter((tool) => String(tool.tool_id).startsWith(`${service}.`));
+    const configured = secretNames.has(secret);
+    const toolCells = tools.length
+      ? tools.map((tool) => `<span class="tag tier-tag-${escapeHTML(String(tool.tier))}">${escapeHTML(tool.tool_id)} · T${escapeHTML(String(tool.tier))}</span>`).join(" ")
+      : '<span class="connector-none">no tools registered</span>';
+    return `
+      <div class="connector-row">
+        <div class="connector-cell connector-service">${escapeHTML(service)}</div>
+        <div class="connector-cell connector-secret">${escapeHTML(secret)}</div>
+        <div class="connector-cell">
+          <span class="tag ${configured ? "outcome-tag-completed" : "outcome-tag-failed"}">${configured ? "yes" : "no"}</span>
+        </div>
+        <div class="connector-cell connector-tools">${toolCells}</div>
+      </div>
+    `;
+  }).join("");
+  els.connectorList.innerHTML = `
+    <div class="connector-row connector-head">
+      <div class="connector-cell">Service</div>
+      <div class="connector-cell">Token secret</div>
+      <div class="connector-cell">Configured?</div>
+      <div class="connector-cell">Tools</div>
+    </div>
+    ${rows}
+  `;
 }
 
 function escapeHTML(value) {

@@ -34,7 +34,7 @@ class AgentRunnerService:
             parent_run_id=parent_run_id,
             workflow_run_id=workflow_run_id,
             workflow_node_run_id=workflow_node_run_id,
-            budget=budget,
+            budget=self._derive_workflow_budget(agent, workflow_run_id, budget),
             success_contract=success_contract,
         )
         instruction = self._build_instruction(agent)
@@ -339,6 +339,43 @@ class AgentRunnerService:
             started_at=now,
             completed_at=now,
         )
+
+    def _derive_workflow_budget(
+        self,
+        agent: dict[str, Any],
+        workflow_run_id: str | None,
+        budget: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """PRD §7 supervisor budget: agent runs within ONE workflow share the
+        agent's tool-call budget so they cannot collectively exceed it. Applies
+        only when this run is part of a workflow, no explicit budget was passed,
+        and the agent declares a finite max_tool_calls. Standalone or unlimited
+        runs are returned unchanged (backward compatible).
+        """
+        if budget is not None or not workflow_run_id:
+            return budget
+        agent_budget = dict(agent.get("budget") or {})
+        cap = agent_budget.get("max_tool_calls")
+        if not isinstance(cap, int) or isinstance(cap, bool):
+            return budget  # unlimited / unset -> nothing to ration
+        consumed = self._workflow_consumed_tool_calls(workflow_run_id)
+        agent_budget["max_tool_calls"] = max(0, cap - consumed)
+        return agent_budget
+
+    def _workflow_consumed_tool_calls(self, workflow_run_id: str) -> int:
+        with self.db.connection() as conn:
+            rows = conn.execute(
+                "SELECT usage_json FROM agent_runs WHERE workflow_run_id = ?",
+                (workflow_run_id,),
+            ).fetchall()
+        total = 0
+        for row in rows:
+            try:
+                usage = self.db.loads(row["usage_json"]) or {}
+            except Exception:  # noqa: BLE001
+                usage = {}
+            total += int(usage.get("tool_calls") or 0)
+        return total
 
     def _start_run(
         self,

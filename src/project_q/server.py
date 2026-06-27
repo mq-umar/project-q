@@ -234,6 +234,10 @@ class ProjectQHandler(BaseHTTPRequestHandler):
             ("GET", r"^/api/auth/status$", self._auth_status),
             ("POST", r"^/api/auth/login$", self._auth_login),
             ("POST", r"^/api/auth/passphrase$", self._auth_set_passphrase),
+            ("GET", r"^/api/projects/suggest$", self._suggest_project),
+            ("POST", r"^/api/experiments/assign$", self._experiment_assign),
+            ("POST", r"^/api/experiments/record$", self._experiment_record),
+            ("GET", r"^/api/experiments/([^/]+)/stats$", self._experiment_stats),
             ("GET", r"^/api/companion/devices$", self._companion_list_devices),
             ("POST", r"^/api/companion/pairing/start$", self._companion_pairing_start),
             ("POST", r"^/api/companion/pairing/complete$", self._companion_pairing_complete),
@@ -247,6 +251,8 @@ class ProjectQHandler(BaseHTTPRequestHandler):
             ("POST", r"^/api/memories/export$", self._export_memories),
             ("POST", r"^/api/memories/import$", self._import_memories),
             ("POST", r"^/api/memories/bulk-delete$", self._bulk_delete_memories),
+            ("GET", r"^/api/memories/playbooks$", self._list_playbooks),
+            ("POST", r"^/api/memories/playbooks/([^/]+)/promote$", self._promote_playbook),
             ("PUT", r"^/api/memories/([^/]+)$", self._update_memory),
             ("DELETE", r"^/api/memories/([^/]+)$", self._delete_memory),
             ("GET", r"^/api/tasks$", self._list_tasks),
@@ -312,6 +318,9 @@ class ProjectQHandler(BaseHTTPRequestHandler):
             ("POST", r"^/api/training/prepare-lora$", self._training_prepare_lora),
             ("GET", r"^/api/tools$", self._list_tools),
             ("POST", r"^/api/tools/execute$", self._execute_tool),
+            ("GET", r"^/api/plugins$", self._list_plugins),
+            ("POST", r"^/api/plugins$", self._install_plugin),
+            ("DELETE", r"^/api/plugins/([^/]+)$", self._remove_plugin),
             ("GET", r"^/api/secrets$", self._list_secrets),
             ("POST", r"^/api/secrets$", self._upsert_secret),
             ("DELETE", r"^/api/secrets/([^/]+)$", self._delete_secret),
@@ -513,12 +522,15 @@ class ProjectQHandler(BaseHTTPRequestHandler):
                 "/api/routines",
                 "/api/settings",
                 "/api/tools",
+                "/api/plugins",
                 "/api/secrets",
                 "/api/dispatches",
                 "/api/diagnostics",
                 "/api/learning",
                 "/api/provider",
                 "/api/training",
+                "/api/projects",
+                "/api/experiments",
             )
             if path == "/api/agents/templates":
                 return False
@@ -598,8 +610,8 @@ class ProjectQHandler(BaseHTTPRequestHandler):
     def _blocked_by_kill_switch(self, method: str, path: str) -> bool:
         if method not in {"POST", "PUT", "DELETE"}:
             return False
-        if path in {"/api/control/kill-switch", "/api/control/resume"}:
-            return False
+        if path in {"/api/control/kill-switch", "/api/control/resume", "/api/auth/login"}:
+            return False  # owner must be able to re-authenticate to resume
         if method == "POST" and re.match(r"^/api/workflow-runs/[^/]+/cancel$", path):
             return False
         if method == "POST" and re.match(r"^/api/training/jobs/[^/]+/rollback$", path):
@@ -1647,6 +1659,26 @@ class ProjectQHandler(BaseHTTPRequestHandler):
         )
         self._json_response({"result": result, "policy_reason": decision.reason})
 
+    def _list_plugins(self, _args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
+        self._json_response({"items": self.app.plugins.list()})
+
+    def _install_plugin(self, _args: tuple[str, ...], body: dict[str, Any], _query: dict[str, Any]) -> None:
+        # plugins.install raises ValueError on validation/collision -> 400 via _route_api.
+        definition = self.app.plugins.install(body)
+        # Build the tool from the validated manifest (no disk round-trip) and
+        # hot-register it so it is usable immediately without a restart.
+        try:
+            self.app.tools.register(self.app.plugins.build_tool(body))
+        except Exception:  # noqa: BLE001 - already persisted; registration is best-effort
+            pass
+        self._json_response(definition, status=HTTPStatus.CREATED)
+
+    def _remove_plugin(self, args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
+        plugin_id = args[0]
+        removed = self.app.plugins.remove(plugin_id)
+        self.app.tools.tools.pop(f"plugin.{plugin_id}", None)
+        self._json_response({"deleted": plugin_id, "removed": removed})
+
     def _list_secrets(self, _args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
         self._json_response({"items": self.app.vault.list_secret_names()})
 
@@ -1714,6 +1746,37 @@ class ProjectQHandler(BaseHTTPRequestHandler):
         except AttributeError:
             status = {"running": False, "scheduled_count": 0}
         self._json_response(status)
+
+    def _suggest_project(self, _args: tuple[str, ...], _body: dict[str, Any], query: dict[str, Any]) -> None:
+        path = (query.get("path", [""])[0] or "").strip()
+        task_type = (query.get("task_type", ["build"])[0] or "build").strip()
+        if not path:
+            self._json_response({"error": "path query parameter is required"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        self._json_response({"suggestions": self.app.suggestions.suggest_for_project(path, task_type)})
+
+    def _experiment_assign(self, _args: tuple[str, ...], body: dict[str, Any], _query: dict[str, Any]) -> None:
+        result = self.app.experiments.assign(str(body.get("experiment_key", "")), body.get("variants", []))
+        self._json_response(result, status=HTTPStatus.CREATED)
+
+    def _experiment_record(self, _args: tuple[str, ...], body: dict[str, Any], _query: dict[str, Any]) -> None:
+        recorded = self.app.experiments.record(str(body.get("experiment_id", "")), bool(body.get("success")))
+        self._json_response({"recorded": recorded})
+
+    def _experiment_stats(self, args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
+        self._json_response(
+            {"stats": self.app.experiments.stats(args[0]), "winner": self.app.experiments.winner(args[0])}
+        )
+
+    def _list_playbooks(self, _args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
+        self._json_response({"playbooks": self.app.memory.list_playbook_candidates()})
+
+    def _promote_playbook(self, args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
+        # The owner-session gate on this POST is itself the explicit owner action.
+        result = self.app.memory.promote_playbook(
+            args[0], owner_confirmed=True, routine_service=self.app.routines
+        )
+        self._json_response(result, status=HTTPStatus.CREATED)
 
     def _prune_memories(self, _args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
         result = self.app.memory.prune_expired()

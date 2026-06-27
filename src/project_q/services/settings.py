@@ -45,6 +45,7 @@ DEFAULT_SETTINGS = {
     "voice_mode": "push_to_talk",
     # Retention & scheduler
     "memory_retention_days": 90,
+    "artifact_retention_hours": 24,
     "git_workspace": "",
     "scheduler_enabled": True,
     "metrics_enabled": True,

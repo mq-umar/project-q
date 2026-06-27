@@ -38,6 +38,12 @@ class MemoryCreate(BaseModel):
     owner_confirmed: bool = True
     tags: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # Phase 3 memory-depth provenance fields (all optional; safe defaults so
+    # existing callers that omit them keep working unchanged).
+    source_type: str = "owner"  # owner | external | inferred | system
+    trust_level: str = "trusted"  # trusted | untrusted
+    inferred: bool = False
+    evidence: list[Any] = Field(default_factory=list)
 
 
 class MemoryUpdate(BaseModel):
@@ -47,6 +53,10 @@ class MemoryUpdate(BaseModel):
     owner_confirmed: bool | None = None
     tags: list[str] | None = None
     metadata: dict[str, Any] | None = None
+    source_type: str | None = None
+    trust_level: str | None = None
+    inferred: bool | None = None
+    evidence: list[Any] | None = None
 
 
 class TaskCreate(BaseModel):
@@ -211,6 +221,7 @@ class SettingsUpdate(BaseModel):
     auto_reflect_on_tasks: bool | None = None
     metrics_enabled: bool | None = None
     memory_retention_days: int | None = Field(default=None, ge=0, le=3650)
+    artifact_retention_hours: int | None = Field(default=None, ge=0, le=8760)
     git_workspace: str | None = None
 
     @field_validator("file_access_roots", mode="before")

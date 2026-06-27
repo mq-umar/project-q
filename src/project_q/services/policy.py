@@ -9,6 +9,24 @@ _INTERNET_TOOLS: frozenset[str] = frozenset({
     "browser.complete_goal",
     "communications.email_draft",
     "knowledge.answer",
+    "github.list_repos",
+    "github.list_issues",
+    "github.create_issue",
+    "slack.list_channels",
+    "slack.post_message",
+    "notion.search",
+    "notion.create_page",
+    "todoist.list_tasks",
+    "todoist.create_task",
+    "linear.list_issues",
+    "linear.create_issue",
+    "google_calendar.list_events",
+    "google_calendar.create_event",
+    "google_drive.list_files",
+    "msgraph.list_mail",
+    "msgraph.list_events",
+    "msgraph.list_drive",
+    "msgraph.send_mail",
 })
 
 
@@ -110,7 +128,7 @@ class PolicyService:
         aggression = str(settings.get("aggression_level", "operator"))
         if aggression == "conservative":
             base = min(base, 0)
-        elif aggression == "balanced":
+        elif aggression in ("balanced", "normal"):
             base = min(base, 1)
         elif aggression == "maximum":
             base = max(base, 2)

@@ -282,8 +282,40 @@ class Database:
             (1, self._apply_phase2_companion_schema),
             (2, self._apply_phase2_relay_schema),
             (3, self._apply_phase2_relay_idempotency_schema),
+            (4, self._apply_memory_depth_schema),
         )
         self._run_migrations(conn, "schema_migrations", migrations)
+
+    def _apply_memory_depth_schema(self, conn: sqlite3.Connection) -> None:
+        """Phase 3 memory-depth columns.
+
+        Added via ALTER TABLE (NOT by editing the memories CREATE TABLE) so
+        existing databases upgrade cleanly. Every column carries a safe DEFAULT
+        so MemoryService.create() and all legacy rows keep working unchanged.
+        The FTS5 external-content table + triggers are untouched: none of these
+        columns participate in the full-text index.
+        """
+        memory_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(memories)").fetchall()
+        }
+        additions = {
+            # JSON-encoded embedding vector (pure-Python cosine), '' when absent.
+            "embedding_json": "TEXT NOT NULL DEFAULT ''",
+            # Provenance lane: 'owner' | 'external' | 'inferred' | 'system'.
+            "source_type": "TEXT NOT NULL DEFAULT 'owner'",
+            # Trust lane: 'trusted' | 'untrusted'.
+            "trust_level": "TEXT NOT NULL DEFAULT 'trusted'",
+            # Whether this memory was inferred rather than directly stated.
+            "inferred": "INTEGER NOT NULL DEFAULT 0",
+            # JSON array of supporting evidence references.
+            "evidence_json": "TEXT NOT NULL DEFAULT '[]'",
+        }
+        for name, declaration in additions.items():
+            if name not in memory_columns:
+                conn.execute(
+                    f"ALTER TABLE memories ADD COLUMN {name} {declaration}"
+                )
 
     def _apply_agent_migrations(self, conn: sqlite3.Connection) -> None:
         migrations = ((1, self._apply_phase3_agent_schema),)
