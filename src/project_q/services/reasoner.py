@@ -998,6 +998,7 @@ class ReasonerService:
             "  example file resolve payload: {\"root\": \".\", \"instruction\": \"find resume for Muhammad Umar Qasim\", \"query\": \"resume\", \"action\": \"reveal\"}\n"
             "  example file choice payload: {\"choice_id\": \"choice_abc123\", \"selection\": 1, \"mode\": \"open\"}\n"
             "  example spreadsheet analyze payload: {\"path\": \"data/sales.xlsx\", \"operation\": \"sum\", \"column\": \"Sales Amount\"}\n"
+            "  example spreadsheet derived-formula payload: {\"path\": \"data/sales.xlsx\", \"expression\": \"revenue - cost\", \"operation\": \"sum\"}\n"
             "  example spreadsheet write payload: {\"path\": \"data/sales.xlsx\", \"operation\": \"average\", \"column\": \"Sales Amount\"}\n"
             "  example diagnostics payload: {\"source\": \"chat\"}\n"
             "  example capability plan payload: {}\n"

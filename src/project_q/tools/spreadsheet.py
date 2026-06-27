@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import csv
 import re
 from pathlib import Path
@@ -12,6 +13,76 @@ from project_q.tools.base import ToolDefinition
 
 
 SUPPORTED_SPREADSHEET_SUFFIXES = {".xlsx", ".csv", ".tsv"}
+
+_EXPR_BINOPS = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod, ast.Pow)
+_EXPR_UNARYOPS = (ast.UAdd, ast.USub)
+
+
+class _RowExpression:
+    """A whitelisted arithmetic expression over spreadsheet column identifiers.
+
+    Only numeric literals, the column names, and + - * / % ** with unary +/- are
+    allowed. NO calls, attributes, comprehensions, names-as-functions, or any
+    other node — so there is no code-execution surface (unlike a bare eval()).
+    Column identifiers are captured raw; the caller maps them to columns via the
+    same fuzzy normalization used everywhere else (so `revenue - cost` matches
+    headers `Revenue` / `Cost`, and `sales_amount` matches `Sales Amount`).
+    """
+
+    def __init__(self, expression: str) -> None:
+        self.expression = expression
+        try:
+            self.tree = ast.parse(expression, mode="eval")
+        except SyntaxError as exc:  # pragma: no cover - defensive
+            raise ValueError(f"could not parse expression: {exc}") from exc
+        self.names: list[str] = []
+        self._validate(self.tree.body)
+
+    def _validate(self, node: ast.AST) -> None:
+        if isinstance(node, ast.BinOp):
+            if not isinstance(node.op, _EXPR_BINOPS):
+                raise ValueError("unsupported operator in expression")
+            self._validate(node.left)
+            self._validate(node.right)
+        elif isinstance(node, ast.UnaryOp):
+            if not isinstance(node.op, _EXPR_UNARYOPS):
+                raise ValueError("unsupported unary operator in expression")
+            self._validate(node.operand)
+        elif isinstance(node, ast.Constant):
+            if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+                raise ValueError("only numeric constants are allowed in expressions")
+        elif isinstance(node, ast.Name):
+            if node.id not in self.names:
+                self.names.append(node.id)
+        else:
+            raise ValueError(f"unsupported expression element: {type(node).__name__}")
+
+    def evaluate(self, env: dict[str, float]) -> float:
+        return self._eval(self.tree.body, env)
+
+    def _eval(self, node: ast.AST, env: dict[str, float]) -> float:
+        if isinstance(node, ast.BinOp):
+            left = self._eval(node.left, env)
+            right = self._eval(node.right, env)
+            if isinstance(node.op, ast.Add):
+                return left + right
+            if isinstance(node.op, ast.Sub):
+                return left - right
+            if isinstance(node.op, ast.Mult):
+                return left * right
+            if isinstance(node.op, ast.Div):
+                return left / right  # ZeroDivisionError handled by the caller
+            if isinstance(node.op, ast.Mod):
+                return left % right
+            return left ** right
+        if isinstance(node, ast.UnaryOp):
+            operand = self._eval(node.operand, env)
+            return -operand if isinstance(node.op, ast.USub) else +operand
+        if isinstance(node, ast.Constant):
+            return float(node.value)
+        if isinstance(node, ast.Name):
+            return env[node.id]
+        raise ValueError("unsupported expression element")
 
 
 class SpreadsheetDataset:
@@ -194,13 +265,21 @@ class SpreadsheetAnalyzeTool(SpreadsheetBaseTool):
     definition = ToolDefinition(
         tool_id="spreadsheet.analyze",
         name="Analyze Spreadsheet",
-        description="Calculate spreadsheet totals, averages, counts, min/max, and numeric profiles",
+        description="Calculate spreadsheet totals, averages, counts, min/max, numeric profiles, and derived cross-column formulas (e.g. expression 'revenue - cost')",
         tier=0,
     )
 
     def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
         path = self._resolve_read_path(payload["path"])
         dataset = self._load_dataset(path, payload.get("sheet"))
+        # Optional derived-formula path: a cross-column expression like
+        # "revenue - cost" or "(revenue - cost) / revenue", evaluated row-wise and
+        # aggregated. When `expression` is absent every existing branch behaves
+        # exactly as before, so this is purely additive.
+        expression = payload.get("expression")
+        if expression:
+            expr_operation = self._normalize_operation(str(payload.get("operation", "sum")))
+            return self._expression(dataset, str(expression), expr_operation)
         operation = self._normalize_operation(str(payload.get("operation", "profile")))
         if operation == "profile":
             return self._profile(dataset)
@@ -219,6 +298,64 @@ class SpreadsheetAnalyzeTool(SpreadsheetBaseTool):
             "matched_column": matched_column,
             "numeric_count": len(values),
             "result": result,
+        }
+
+    def _expression(
+        self,
+        dataset: SpreadsheetDataset,
+        expression: str,
+        operation: str,
+    ) -> dict[str, Any]:
+        compiled = _RowExpression(expression)
+        if operation == "profile":
+            operation = "sum"  # profile is meaningless for a single derived series
+        # Map each expression identifier to a column via the shared fuzzy
+        # normalization (so `sales_amount` matches the `Sales Amount` header).
+        normalized_headers = {self._normalize(header): index for index, header in enumerate(dataset.headers)}
+        name_to_index: dict[str, int] = {}
+        unknown: list[str] = []
+        for name in compiled.names:
+            index = normalized_headers.get(self._normalize(name))
+            if index is None:
+                unknown.append(name)
+            else:
+                name_to_index[name] = index
+        if unknown:
+            raise ValueError(f"expression references unknown column(s): {sorted(unknown)}")
+
+        derived: list[float] = []
+        skipped = 0
+        for row in dataset.rows:
+            env: dict[str, float] = {}
+            usable = True
+            for name, index in name_to_index.items():
+                number = self._to_number(row[index]) if index < len(row) else None
+                if number is None:
+                    usable = False
+                    break
+                env[name] = number
+            if not usable:
+                skipped += 1
+                continue
+            try:
+                value = compiled.evaluate(env)
+            except ZeroDivisionError:
+                skipped += 1
+                continue
+            if isinstance(value, (int, float)) and value == value:  # drop NaN
+                derived.append(float(value))
+            else:
+                skipped += 1
+        result = self._calculate(operation, derived)
+        return {
+            "path": str(dataset.path),
+            "sheet": dataset.sheet_name,
+            "operation": operation,
+            "expression": expression,
+            "derived_count": len(derived),
+            "skipped_rows": skipped,
+            "result": result,
+            "sample": derived[:5],
         }
 
     def _grouped(

@@ -12,6 +12,10 @@ cd "C:\Users\umarq.APEX\Documents\Jarvis\.worktrees\phase3-orchestration"
 ```
 Open that URL in Edge/Chrome. Runs in local-heuristic mode out of the box.
 Run the tests anytime: `$env:PYTHONPATH='src'; & <python> -m unittest discover -s tests`.
+**Verify every capability end-to-end** with one command — it exercises chat, math/science
+answers, code+website generation, memory, agents, the get-smarter loop, MCP, spreadsheets,
+connectors, vault, and prompt-injection scanning against a live instance and prints a
+PASS/FAIL table: `$env:PYTHONPATH='src'; & <python> tests/_capability_e2e.py` (last run: **22/22 PASS**).
 
 ## 2. Turn on real AI chat (optional)
 Settings → Provider. Free/local: install [Ollama](https://ollama.com), pull a model
@@ -86,7 +90,8 @@ never break startup or built-in tools — it's isolated and best-effort.
 ---
 **Status:** Phase 1 done · Phase 2 source-complete (needs §6) · Phase 3 ~92% · Phase 4 ~65%.
 Two full audits (53 + 10 confirmed findings) + a 23-agent capability assessment, all
-adversarially verified and fixed/implemented. **460 unit tests** + Phase-1/2 verifiers +
-prompt-injection & self-diagnostics simulations — all green. Recent capability work: MCP
-client, closed get-smarter loop, observe-then-replan, raised the 3-tool ceiling.
-Per-commit log: `docs/PRD_PROGRESS_2026-06-27.md`.
+adversarially verified and fixed/implemented. **467 unit tests** + a **22/22 end-to-end
+capability probe** + Phase-1/2 verifiers + prompt-injection & self-diagnostics simulations
+— all green. Recent capability work: MCP client, closed get-smarter loop, observe-then-
+replan, raised the 3-tool ceiling, spreadsheet derived formulas. Per-commit log:
+`docs/PRD_PROGRESS_2026-06-27.md`.

@@ -21,6 +21,7 @@ workflow) and gated on a full unittest run before commit.
 | `cb57308` | **MCP client** (Claude-Code-style external tools) — clean-room JSON-RPC/stdio, isolated reader-thread + timeouts, owner-gated install/remove, never breaks startup. |
 | `0f0a382` | **Get-smarter loop closed + ceilings raised** (23-agent assessment) — reflect-in-cycle drives playbook candidates; recurrence-ranked candidates; dropped the 3-tool truncation (default 8 / honor agent budget); research.web on the Research template; coherent non-TODO script projects. |
 | `295ec72` | **Observe-then-replan** — gated, synthesis-only refine pass feeds read-only tool observations back to the provider so any model answers grounded in tool output; never re-executes tools. Dashboard toggle + smartness note. |
+| _(next)_ | **Capability verification + spreadsheet formulas** — `tests/_capability_e2e.py` exercises 22 capabilities end-to-end against a live instance (22/22 PASS); `spreadsheet.analyze` gains a whitelisted-AST derived cross-column `expression` (e.g. `revenue - cost`), additive + no code-exec surface. |
 
 ## Connector coverage (PRD §10.4)
 GitHub · Slack · Notion · Todoist · Linear · Google (Calendar/Drive, OAuth2) ·
@@ -28,9 +29,11 @@ Microsoft Graph (Outlook mail/calendar, OneDrive). Tokens live in the **Vault**
 under fixed secret names; tier-mapped per the PRD table; all credential-free testable.
 
 ## Test baseline
-Full `unittest discover` grew **318 → 460** tests, green each track (MCP +26, capability
-assessment fixes, observe-then-replan +7). Runtime is ~10-12 min — the suite spins real
-HTTP servers, subprocesses, and PBKDF2/crypto, so it is slow, not hung.
+Full `unittest discover` grew **318 → 467** tests, green each track (MCP +26, capability
+assessment fixes, observe-then-replan +7, spreadsheet formulas +7). Plus a standalone
+**22/22 end-to-end capability probe** (`tests/_capability_e2e.py`, run explicitly). Runtime
+is ~10-12 min — the suite spins real HTTP servers, subprocesses, and PBKDF2/crypto, so it
+is slow, not hung.
 
 ## What remains — all hard-gated, not buildable/verifiable in this environment
 - **AES-256 full-DB at-rest** (§9.6): needs the SQLCipher dependency. Documented as the
