@@ -22,7 +22,7 @@ workflow) and gated on a full unittest run before commit.
 | `0f0a382` | **Get-smarter loop closed + ceilings raised** (23-agent assessment) — reflect-in-cycle drives playbook candidates; recurrence-ranked candidates; dropped the 3-tool truncation (default 8 / honor agent budget); research.web on the Research template; coherent non-TODO script projects. |
 | `295ec72` | **Observe-then-replan** — gated, synthesis-only refine pass feeds read-only tool observations back to the provider so any model answers grounded in tool output; never re-executes tools. Dashboard toggle + smartness note. |
 | `ed1db89` | **Capability verification + spreadsheet formulas** — `tests/_capability_e2e.py` exercises 22 capabilities end-to-end against a live instance (22/22 PASS); `spreadsheet.analyze` gains a whitelisted-AST derived cross-column `expression` (e.g. `revenue - cost`), additive + no code-exec surface. |
-| _(next)_ | **Intrinsic math intelligence** — `knowledge.answer` now solves (no provider) quadratics (real/double/complex roots), percentages, statistics (mean/median/stdev), and rich arithmetic with whitelisted functions/constants (`sqrt`, `factorial`, powers, modulo, trig, `pi`/`e`). Routed to the math domain; 13 tests incl. a no-code-execution guard. |
+| `6f0cf2f` | **Intrinsic math intelligence** — `knowledge.answer` now solves (no provider) quadratics (real/double/complex roots), percentages, statistics (mean/median/stdev), and rich arithmetic with whitelisted functions/constants (`sqrt`, `factorial`, powers, modulo, trig, `pi`/`e`). Routed to the math domain; 13 tests incl. a no-code-execution guard. |
 
 ## Connector coverage (PRD §10.4)
 GitHub · Slack · Notion · Todoist · Linear · Google (Calendar/Drive, OAuth2) ·
