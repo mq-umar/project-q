@@ -9,6 +9,11 @@ _INTERNET_TOOLS: frozenset[str] = frozenset({
     "browser.complete_goal",
     "communications.email_draft",
     "knowledge.answer",
+    "github.list_repos",
+    "github.list_issues",
+    "github.create_issue",
+    "slack.list_channels",
+    "slack.post_message",
 })
 
 

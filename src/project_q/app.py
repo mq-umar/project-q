@@ -229,6 +229,25 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
     tools.register(SecurityScanExternalContentTool(trust))
     research = WebResearchService(tools.get("browser.inspect_page"), trust, audit)
     tools.register(ResearchWebTool(research))
+    # Bearer-token connectors (GitHub/Slack). Registered post-construction so they
+    # receive the live vault + settings. Wrapped so a connector error can never
+    # break app startup (same isolation philosophy as the plugins/git/outlook loads).
+    try:
+        from project_q.tools.connectors import (
+            GitHubCreateIssueTool,
+            GitHubListIssuesTool,
+            GitHubListReposTool,
+            SlackListChannelsTool,
+            SlackPostMessageTool,
+        )
+
+        tools.register(GitHubListReposTool(vault, settings))
+        tools.register(GitHubListIssuesTool(vault, settings))
+        tools.register(GitHubCreateIssueTool(vault, settings))
+        tools.register(SlackListChannelsTool(vault, settings))
+        tools.register(SlackPostMessageTool(vault, settings))
+    except Exception:
+        pass
     approvals = ApprovalService(db, vault, tools, policy, audit, sync)
     context = ContextService(db, memory, tasks, agents, routines, settings, tools, resolved_config.workspace_root, trust)
     reasoner = ReasonerService(settings, vault, audit)
