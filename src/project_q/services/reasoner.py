@@ -193,6 +193,60 @@ class ReasonerService:
             provider_configured=self._provider_configured(settings),
         )
 
+    def synthesize(
+        self,
+        *,
+        user_message: str,
+        observations: list[dict[str, Any]],
+        context: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Observe-then-replan synthesis pass.
+
+        After read-only tools have run, feed their observations back to the model
+        for ONE bounded pass and return a refined, grounded reply. This NEVER
+        executes tools (the returned plan's tool_calls are ignored) so no side
+        effect runs twice and no write is duplicated.
+
+        Returns None — so the caller keeps its single-pass reply — when the
+        feature is disabled, no provider is configured, there are no
+        observations, or the provider errors. Gated off by default, so the
+        default chat path is byte-for-byte unchanged.
+        """
+        if not observations:
+            return None
+        settings = self.settings_service.get_all()
+        if not settings.get("observe_then_replan_enabled"):
+            return None
+        if not (settings.get("provider_enabled") and self._provider_configured(settings)):
+            return None
+        base_context = dict(context or {})
+        refine_context = {
+            **base_context,
+            "tool_observations": observations[:20],
+            "synthesis_instruction": (
+                "Tools have already run and returned the observations above. "
+                "Write the final answer to the owner grounded in those "
+                "observations. Do not request more tools; leave every write "
+                "array and tool_calls empty."
+            ),
+        }
+        try:
+            selected_model = self._provider_model_for_request(
+                user_message=user_message,
+                context=refine_context,
+                settings=settings,
+            )
+            request_settings = {**settings, "resolved_model_name": selected_model}
+            plan = self._plan_provider(
+                user_message=user_message,
+                context=refine_context,
+                settings=request_settings,
+            )
+        except Exception:  # noqa: BLE001 - refine is best-effort; fall back to single-pass
+            return None
+        reply = (plan.reply or "").strip()
+        return reply or None
+
     def stream_plan(self, *, user_message: str, context: dict[str, Any]) -> Iterator[ReasonerStreamEvent]:
         settings = self.settings_service.get_all()
         normalization = self.intent_normalizer.normalize(user_message)

@@ -219,6 +219,7 @@ class SettingsUpdate(BaseModel):
     outlook_enabled: bool | None = None
     scheduler_enabled: bool | None = None
     auto_reflect_on_tasks: bool | None = None
+    observe_then_replan_enabled: bool | None = None
     metrics_enabled: bool | None = None
     memory_retention_days: int | None = Field(default=None, ge=0, le=3650)
     artifact_retention_hours: int | None = Field(default=None, ge=0, le=8760)

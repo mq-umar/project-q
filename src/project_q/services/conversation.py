@@ -15,6 +15,44 @@ class ConversationStreamEvent:
 
 
 class ConversationService:
+    # Read-only tools whose results are meaningful "observations" to feed back
+    # into a synthesis pass. The refine never re-executes tools, so this list is
+    # about relevance, not safety — write/side-effecting tools are simply not
+    # useful as grounding for a better answer.
+    _OBSERVATION_TOOLS = frozenset(
+        {
+            "research.web",
+            "knowledge.answer",
+            "browser.inspect_page",
+            "browser.complete_goal",
+            "filesystem.read_file",
+            "filesystem.search_files",
+            "filesystem.list_directory",
+            "filesystem.resolve_file_request",
+            "spreadsheet.inspect",
+            "spreadsheet.analyze",
+            "git.status",
+            "git.diff",
+            "git.log",
+            "windows.list_windows",
+            "windows.ocr_screenshot",
+            "windows.inspect_ui_tree",
+            "windows.registry_read",
+        }
+    )
+
+    def _observations_from(self, executed_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        observations: list[dict[str, Any]] = []
+        for entry in executed_tools or []:
+            tool_id = entry.get("tool_id")
+            if tool_id not in self._OBSERVATION_TOOLS:
+                continue
+            result = entry.get("result")
+            if result in (None, "", [], {}):
+                continue
+            observations.append({"tool_id": tool_id, "result": result})
+        return observations
+
     def __init__(
         self,
         db,
@@ -103,8 +141,25 @@ class ConversationService:
             originating_goal=payload.message,
             model=reasoning.model_name or "",
         )
+        # Observe-then-replan: when enabled (and a provider is configured), feed
+        # read-only tool observations back to the reasoner for ONE synthesis pass
+        # so the final answer is grounded in what the tools saw. synthesize()
+        # returns None when disabled/unconfigured, so the default path is
+        # unchanged and tools are never re-executed.
+        plan_reply = reasoning.plan.reply
+        observations = self._observations_from(execution["executed_tools"])
+        if observations:
+            try:
+                refined = self.reasoner_service.synthesize(
+                    user_message=payload.message,
+                    observations=observations,
+                )
+            except Exception:  # noqa: BLE001 - refine must never break the turn
+                refined = None
+            if refined:
+                plan_reply = refined
         reply = self.executor_service.compose_reply(
-            reasoning.plan.reply,
+            plan_reply,
             execution["executed_tools"],
             execution["blocked_tools"],
             reasoning.warning,

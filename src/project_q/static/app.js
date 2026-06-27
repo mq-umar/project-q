@@ -320,6 +320,7 @@ const els = {
   outlookEnabled: document.getElementById("outlookEnabled"),
   schedulerEnabled: document.getElementById("schedulerEnabled"),
   autoReflectOnTasks: document.getElementById("autoReflectOnTasks"),
+  observeThenReplan: document.getElementById("observeThenReplan"),
   memoryRetentionDays: document.getElementById("memoryRetentionDays"),
   gitWorkspace: document.getElementById("gitWorkspace"),
   // Memory prune
@@ -953,6 +954,7 @@ function render() {
   if (els.outlookEnabled) els.outlookEnabled.checked = Boolean(state.settings.outlook_enabled);
   if (els.schedulerEnabled) els.schedulerEnabled.checked = Boolean(state.settings.scheduler_enabled ?? true);
   if (els.autoReflectOnTasks) els.autoReflectOnTasks.checked = Boolean(state.settings.auto_reflect_on_tasks);
+  if (els.observeThenReplan) els.observeThenReplan.checked = Boolean(state.settings.observe_then_replan_enabled);
   if (els.memoryRetentionDays) els.memoryRetentionDays.value = String(state.settings.memory_retention_days ?? 90);
   if (els.gitWorkspace) els.gitWorkspace.value = state.settings.git_workspace || '';
 
@@ -2002,6 +2004,7 @@ els.settingsForm.addEventListener("submit", async (event) => {
       outlook_enabled: els.outlookEnabled ? els.outlookEnabled.checked : undefined,
       scheduler_enabled: els.schedulerEnabled ? els.schedulerEnabled.checked : undefined,
       auto_reflect_on_tasks: els.autoReflectOnTasks ? els.autoReflectOnTasks.checked : undefined,
+      observe_then_replan_enabled: els.observeThenReplan ? els.observeThenReplan.checked : undefined,
       memory_retention_days: els.memoryRetentionDays ? Number(els.memoryRetentionDays.value) : undefined,
       git_workspace: els.gitWorkspace ? els.gitWorkspace.value.trim() : undefined,
     }),

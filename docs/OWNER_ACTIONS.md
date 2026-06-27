@@ -19,6 +19,18 @@ Settings → Provider. Free/local: install [Ollama](https://ollama.com), pull a 
 and store the API key in the **Vault** (Secrets panel). Ollama also powers the new
 **semantic memory** embeddings automatically once it's running.
 
+**Smartness note (important).** Project Q's harness is now model-agnostic and does the
+"smart" structural work itself — multi-step tool turns (up to 8/turn, or an agent's
+declared budget), an optional **observe-then-replan** pass (Settings → toggle: after
+read-only tools run, it re-answers grounded in what they returned), a closed
+**get-smarter loop** (reflection → playbook candidates → recurrence ranking → owner
+promotion), and routed local models for general/coding/reasoning/fast roles. But the
+*ceiling* of intelligence (frontier-grade code, research papers, hard math/science) is
+set by the **provider you point it at**. For the highest capability, use a frontier model
+— e.g. **Claude Opus** — as the provider; small local models will be noticeably weaker on
+hard problems even with the better harness. Turn on **Observe-then-replan** once a
+provider is configured to get the most out of it.
+
 ## 3. Activate connectors — store a token in the Vault
 Open the **Connectors** panel (it shows which are configured). Add each token in the
 **Secrets/Vault** panel under the exact secret name, then call the tool from the Tools panel or an agent:
@@ -63,8 +75,18 @@ Owner login is loopback-trust by default. To require a passphrase:
 `POST /api/auth/passphrase {"passphrase": "…"}` (while you have a session). After that,
 new sessions require `POST /api/auth/login`.
 
+## 9. Add Claude-Code-style external tools (MCP servers) — optional
+Project Q now speaks the **Model Context Protocol** (clean-room stdio client). Any MCP
+server you install becomes callable tools (`mcp.<server>.<tool>`) behind the same
+tier/policy gate. Add one with an owner session:
+`POST /api/mcp/servers {"id":"my-server","command":"npx","args":["-y","@some/mcp-server"],"tier":1}`
+(GET to list, DELETE `/api/mcp/servers/<id>` to remove). A broken or hostile server can
+never break startup or built-in tools — it's isolated and best-effort.
+
 ---
-**Status:** Phase 1 done · Phase 2 source-complete (needs §6) · Phase 3 ~90% · Phase 4 ~60%.
-Two full audits (53 + 10 confirmed findings, all adversarially verified, all fixed),
-421 unit tests + Phase-1/2 verifiers + prompt-injection & self-diagnostics simulations —
-all green. Per-commit log: `docs/PRD_PROGRESS_2026-06-27.md`.
+**Status:** Phase 1 done · Phase 2 source-complete (needs §6) · Phase 3 ~92% · Phase 4 ~65%.
+Two full audits (53 + 10 confirmed findings) + a 23-agent capability assessment, all
+adversarially verified and fixed/implemented. **460 unit tests** + Phase-1/2 verifiers +
+prompt-injection & self-diagnostics simulations — all green. Recent capability work: MCP
+client, closed get-smarter loop, observe-then-replan, raised the 3-tool ceiling.
+Per-commit log: `docs/PRD_PROGRESS_2026-06-27.md`.

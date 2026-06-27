@@ -51,6 +51,11 @@ DEFAULT_SETTINGS = {
     "metrics_enabled": True,
     "outlook_enabled": False,
     "auto_reflect_on_tasks": False,
+    # When enabled (and a provider is configured), the chat loop runs ONE bounded
+    # synthesis pass after read-only tools return, feeding their observations back
+    # to the model so the final answer is grounded in what the tools saw. Never
+    # re-executes tools. Default off keeps the single-pass behavior unchanged.
+    "observe_then_replan_enabled": False,
 }
 
 

@@ -18,6 +18,8 @@ workflow) and gated on a full unittest run before commit.
 | `94182f9` | **Connectors: Microsoft Graph** — Outlook mail/calendar, OneDrive, send-mail. |
 | `aa8d706` | **Artifact retention** (§9.6) — screenshot/OCR auto-expiry. |
 | `c20931e` | **Agent supervisor** (§7) — root tool-call budget propagation across a workflow. |
+| `cb57308` | **MCP client** (Claude-Code-style external tools) — clean-room JSON-RPC/stdio, isolated reader-thread + timeouts, owner-gated install/remove, never breaks startup. |
+| `0f0a382` | **Get-smarter loop closed + ceilings raised** (23-agent assessment) — reflect-in-cycle drives playbook candidates; recurrence-ranked candidates; dropped the 3-tool truncation (default 8 / honor agent budget); research.web on the Research template; coherent non-TODO script projects. |
 
 ## Connector coverage (PRD §10.4)
 GitHub · Slack · Notion · Todoist · Linear · Google (Calendar/Drive, OAuth2) ·
@@ -25,8 +27,9 @@ Microsoft Graph (Outlook mail/calendar, OneDrive). Tokens live in the **Vault**
 under fixed secret names; tier-mapped per the PRD table; all credential-free testable.
 
 ## Test baseline
-Full `unittest discover` grew **318 → 420** tests, green each track. (A few live-HTTP
-streaming/relay tests flake only under full-suite parallel load; they pass in isolation.)
+Full `unittest discover` grew **318 → 460** tests, green each track (MCP +26, capability
+assessment fixes, observe-then-replan +7). Runtime is ~10-12 min — the suite spins real
+HTTP servers, subprocesses, and PBKDF2/crypto, so it is slow, not hung.
 
 ## What remains — all hard-gated, not buildable/verifiable in this environment
 - **AES-256 full-DB at-rest** (§9.6): needs the SQLCipher dependency. Documented as the
