@@ -234,6 +234,10 @@ class ProjectQHandler(BaseHTTPRequestHandler):
             ("GET", r"^/api/auth/status$", self._auth_status),
             ("POST", r"^/api/auth/login$", self._auth_login),
             ("POST", r"^/api/auth/passphrase$", self._auth_set_passphrase),
+            ("GET", r"^/api/projects/suggest$", self._suggest_project),
+            ("POST", r"^/api/experiments/assign$", self._experiment_assign),
+            ("POST", r"^/api/experiments/record$", self._experiment_record),
+            ("GET", r"^/api/experiments/([^/]+)/stats$", self._experiment_stats),
             ("GET", r"^/api/companion/devices$", self._companion_list_devices),
             ("POST", r"^/api/companion/pairing/start$", self._companion_pairing_start),
             ("POST", r"^/api/companion/pairing/complete$", self._companion_pairing_complete),
@@ -525,6 +529,8 @@ class ProjectQHandler(BaseHTTPRequestHandler):
                 "/api/learning",
                 "/api/provider",
                 "/api/training",
+                "/api/projects",
+                "/api/experiments",
             )
             if path == "/api/agents/templates":
                 return False
@@ -1740,6 +1746,27 @@ class ProjectQHandler(BaseHTTPRequestHandler):
         except AttributeError:
             status = {"running": False, "scheduled_count": 0}
         self._json_response(status)
+
+    def _suggest_project(self, _args: tuple[str, ...], _body: dict[str, Any], query: dict[str, Any]) -> None:
+        path = (query.get("path", [""])[0] or "").strip()
+        task_type = (query.get("task_type", ["build"])[0] or "build").strip()
+        if not path:
+            self._json_response({"error": "path query parameter is required"}, status=HTTPStatus.BAD_REQUEST)
+            return
+        self._json_response({"suggestions": self.app.suggestions.suggest_for_project(path, task_type)})
+
+    def _experiment_assign(self, _args: tuple[str, ...], body: dict[str, Any], _query: dict[str, Any]) -> None:
+        result = self.app.experiments.assign(str(body.get("experiment_key", "")), body.get("variants", []))
+        self._json_response(result, status=HTTPStatus.CREATED)
+
+    def _experiment_record(self, _args: tuple[str, ...], body: dict[str, Any], _query: dict[str, Any]) -> None:
+        recorded = self.app.experiments.record(str(body.get("experiment_id", "")), bool(body.get("success")))
+        self._json_response({"recorded": recorded})
+
+    def _experiment_stats(self, args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
+        self._json_response(
+            {"stats": self.app.experiments.stats(args[0]), "winner": self.app.experiments.winner(args[0])}
+        )
 
     def _list_playbooks(self, _args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
         self._json_response({"playbooks": self.app.memory.list_playbook_candidates()})

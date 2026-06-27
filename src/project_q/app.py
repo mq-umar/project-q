@@ -45,6 +45,8 @@ from project_q.services.tasks import TaskService
 from project_q.services.training import TrainingService
 from project_q.services.trust import TrustBoundaryService
 from project_q.services.vault import VaultService
+from project_q.services.suggestions import SuggestionsService
+from project_q.services.ab_testing import ExperimentService
 from project_q.services.voice import VoiceService
 from project_q.services.workflow_orchestrator import WorkflowOrchestratorService
 from project_q.services.workflow_process import SubprocessNodeBackend
@@ -105,6 +107,8 @@ class ProjectQApplication:
     dispatches: ProjectDispatchService
     tools: ToolRegistry
     plugins: Any
+    suggestions: Any
+    experiments: Any
     scheduler: Any
     relay_provisioner: Any
     relay_bridge: Any
@@ -350,6 +354,8 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
         tid for tid in tools.tools.keys() if not tid.startswith("plugin.")
     }
 
+    suggestions = SuggestionsService()
+    experiments = ExperimentService(db)
     application = ProjectQApplication(
         config=resolved_config,
         started_at=started_at,
@@ -393,6 +399,8 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
         dispatches=dispatches,
         tools=tools,
         plugins=plugins,
+        suggestions=suggestions,
+        experiments=experiments,
         scheduler=scheduler,
         relay_provisioner=relay_provisioner,
         relay_bridge=None,

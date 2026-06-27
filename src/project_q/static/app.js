@@ -340,6 +340,82 @@ let streamedSpeechBuffer = "";
 let activePairingURI = "";
 let chatStreaming = false;
 
+// ── Voice orb (audio-reactive 2D canvas, see orb.js) ──────────────────────
+// Best-effort: if orb.js failed to load or the canvas is missing, voiceOrb is
+// a harmless no-op so nothing here can ever throw.
+let voiceOrb = { setLevel() {}, setState() {}, start() {}, stop() {} };
+let orbAnalyser = null; // Web Audio AnalyserNode when a real mic stream exists
+let orbFreqData = null;
+let orbSyntheticTimer = 0;
+
+(function initVoiceOrb() {
+  try {
+    const canvas = document.getElementById("voiceOrb");
+    if (canvas && typeof window.createVoiceOrb === "function") {
+      voiceOrb = window.createVoiceOrb(canvas) || voiceOrb;
+      voiceOrb.setState("idle");
+      voiceOrb.start();
+    }
+  } catch (_) {
+    /* never let the orb break the dashboard */
+  }
+})();
+
+// Feed a real amplitude from a mic MediaStream when one is readily available.
+function attachOrbAnalyser(stream) {
+  try {
+    if (!stream || orbAnalyser) return;
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const audioCtx = new AudioCtx();
+    const source = audioCtx.createMediaStreamSource(stream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 256;
+    analyser.smoothingTimeConstant = 0.8;
+    source.connect(analyser);
+    orbAnalyser = analyser;
+    orbFreqData = new Uint8Array(analyser.frequencyBinCount);
+  } catch (_) {
+    orbAnalyser = null;
+  }
+}
+
+function detachOrbAnalyser() {
+  orbAnalyser = null;
+  orbFreqData = null;
+}
+
+// Drive the orb level: prefer real mic amplitude, else a synthetic pulse while
+// a chat response is streaming. Runs once per animation frame and is fully
+// guarded so a missing Web Audio API never breaks anything.
+(function driveVoiceOrb() {
+  function tick() {
+    try {
+      if (orbAnalyser && orbFreqData) {
+        orbAnalyser.getByteFrequencyData(orbFreqData);
+        let sum = 0;
+        const n = Math.min(32, orbFreqData.length);
+        for (let i = 0; i < n; i++) sum += orbFreqData[i];
+        voiceOrb.setLevel(sum / (n * 255));
+      } else if (chatStreaming) {
+        // synthetic amplitude: a lively wobble while Q is "speaking"
+        orbSyntheticTimer += 0.12;
+        const v =
+          0.35 +
+          Math.abs(Math.sin(orbSyntheticTimer)) * 0.4 +
+          Math.random() * 0.12;
+        voiceOrb.setLevel(Math.min(1, v));
+      } else {
+        voiceOrb.setLevel(0);
+      }
+    } catch (_) {
+      /* ignore — keep the loop alive */
+    }
+    window.requestAnimationFrame(tick);
+  }
+  if (window.requestAnimationFrame) window.requestAnimationFrame(tick);
+})();
+
 function voiceOutputEnabled() {
   return Boolean(state.settings?.voice_enabled);
 }
@@ -1666,6 +1742,7 @@ els.chatForm.addEventListener("submit", async (event) => {
   const message = els.chatInput.value.trim();
   if (!message) return;
   chatStreaming = true;
+  try { voiceOrb.setState("speaking"); } catch (_) {}
   const submitBtn = els.chatForm.querySelector('button[type="submit"]');
   if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = "Sending…"; }
 
@@ -1728,6 +1805,7 @@ els.chatForm.addEventListener("submit", async (event) => {
     showToast(error.message, "error");
   } finally {
     chatStreaming = false;
+    try { voiceOrb.setState("idle"); } catch (_) {}
     if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = "Send ↵"; }
     els.chatApproval.checked = false;
     // Re-sync from server to pick up canonical IDs and any tool side-effects
@@ -2259,12 +2337,27 @@ function startStreamingRecognition(RecognitionConstructor) {
   recognition.onend = () => {
     activeVoiceRecognition = null;
     setVoiceRecordingState(false);
+    detachOrbAnalyser();
+    try { voiceOrb.setState(chatStreaming ? "speaking" : "idle"); } catch (_) {}
     if (els.chatInput) els.chatInput.focus();
   };
 
   cancelVoiceOutput();
   activeVoiceRecognition = recognition;
   setVoiceRecordingState(true);
+  try { voiceOrb.setState("listening"); } catch (_) {}
+  // Best-effort: feed a real mic amplitude to the orb if permission is granted.
+  // Recognition still works regardless of whether this resolves.
+  try {
+    if (navigator.mediaDevices?.getUserMedia) {
+      navigator.mediaDevices
+        .getUserMedia({ audio: true })
+        .then(attachOrbAnalyser)
+        .catch(() => {});
+    }
+  } catch (_) {
+    /* ignore */
+  }
   recognition.start();
 }
 
