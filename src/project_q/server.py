@@ -247,6 +247,8 @@ class ProjectQHandler(BaseHTTPRequestHandler):
             ("POST", r"^/api/memories/export$", self._export_memories),
             ("POST", r"^/api/memories/import$", self._import_memories),
             ("POST", r"^/api/memories/bulk-delete$", self._bulk_delete_memories),
+            ("GET", r"^/api/memories/playbooks$", self._list_playbooks),
+            ("POST", r"^/api/memories/playbooks/([^/]+)/promote$", self._promote_playbook),
             ("PUT", r"^/api/memories/([^/]+)$", self._update_memory),
             ("DELETE", r"^/api/memories/([^/]+)$", self._delete_memory),
             ("GET", r"^/api/tasks$", self._list_tasks),
@@ -1738,6 +1740,16 @@ class ProjectQHandler(BaseHTTPRequestHandler):
         except AttributeError:
             status = {"running": False, "scheduled_count": 0}
         self._json_response(status)
+
+    def _list_playbooks(self, _args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
+        self._json_response({"playbooks": self.app.memory.list_playbook_candidates()})
+
+    def _promote_playbook(self, args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
+        # The owner-session gate on this POST is itself the explicit owner action.
+        result = self.app.memory.promote_playbook(
+            args[0], owner_confirmed=True, routine_service=self.app.routines
+        )
+        self._json_response(result, status=HTTPStatus.CREATED)
 
     def _prune_memories(self, _args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
         result = self.app.memory.prune_expired()

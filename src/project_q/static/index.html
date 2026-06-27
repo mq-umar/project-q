@@ -100,6 +100,17 @@
             <span class="ni">◻</span><span>Audit Log</span>
           </a>
 
+          <span class="nav-group-label">Extensibility</span>
+          <a class="nav-link" href="#section-plugins" data-section="plugins">
+            <span class="ni">⧉</span><span>Plugins</span>
+          </a>
+          <a class="nav-link" href="#section-playbooks" data-section="playbooks">
+            <span class="ni">▷</span><span>Playbooks</span>
+          </a>
+          <a class="nav-link" href="#section-connectors" data-section="connectors">
+            <span class="ni">⇄</span><span>Connectors</span>
+          </a>
+
           <span class="nav-group-label">Command</span>
           <a class="nav-link" href="#section-companion" data-section="companion">
             <span class="ni">◇</span><span>Companion</span>
@@ -534,6 +545,61 @@
                 </form>
                 <pre id="toolResult" class="console-output split-output">No tool run yet.</pre>
               </div>
+            </section>
+
+            <!-- ── Plugins ── full -->
+            <section class="card full-card" id="section-plugins" data-nav-id="plugins">
+              <div class="card-header">
+                <div>
+                  <p class="card-label">Extensibility</p>
+                  <h2>Plugins</h2>
+                </div>
+              </div>
+              <div class="split-layout">
+                <form id="pluginForm" class="inline-form vertical">
+                  <p class="helper-copy">
+                    Install an owner-authored tool from a declarative JSON manifest. No code is run on install.
+                  </p>
+                  <p class="helper-copy plugin-hint">
+                    HTTP: {"id":"my-tool","name":"...","description":"...","type":"http","tier":0,"url":"https://...","method":"GET"}
+                    &nbsp;·&nbsp; Shell: {"id":"...","name":"...","type":"shell","command":"...","tier":3}
+                  </p>
+                  <textarea id="pluginManifest" rows="12" spellcheck="false" placeholder='{"id":"my-tool","name":"My Tool","description":"...","type":"http","tier":0,"url":"https://example.com","method":"GET"}'></textarea>
+                  <div class="form-actions">
+                    <button type="submit">Install Plugin</button>
+                  </div>
+                </form>
+                <div id="pluginList" class="stack-list split-list"></div>
+              </div>
+            </section>
+
+            <!-- ── Playbooks ── half -->
+            <section class="card" id="section-playbooks" data-nav-id="playbooks">
+              <div class="card-header">
+                <div>
+                  <p class="card-label">Reflection Candidates</p>
+                  <h2>Playbooks</h2>
+                </div>
+                <button type="button" id="playbookRefreshButton" class="secondary-button btn-sm">↻</button>
+              </div>
+              <p class="helper-copy">
+                Promote reflection playbook candidates into trusted routines. Promotion is an explicit owner action.
+              </p>
+              <div id="playbookList" class="stack-list"></div>
+            </section>
+
+            <!-- ── Connectors ── half -->
+            <section class="card" id="section-connectors" data-nav-id="connectors">
+              <div class="card-header">
+                <div>
+                  <p class="card-label">Service Readiness</p>
+                  <h2>Connectors</h2>
+                </div>
+              </div>
+              <p class="helper-copy">
+                GitHub, Slack, Notion, and Todoist tools and the API token each needs. Store tokens in the Vault panel.
+              </p>
+              <div id="connectorList" class="connector-list"></div>
             </section>
 
             <!-- ── Companion ── half -->

@@ -2155,6 +2155,104 @@ details[open] .settings-group-title::before {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   PLUGINS / PLAYBOOKS / CONNECTORS
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Plugin manifest hint */
+.plugin-hint {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.7rem;
+  color: var(--muted-2);
+  word-break: break-word;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: rgba(0, 200, 255, 0.03);
+  padding: 8px 10px;
+}
+
+#pluginManifest {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.75rem;
+  line-height: 1.55;
+}
+
+/* Playbook tool sequence */
+.playbook-sequence {
+  margin-top: 4px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.74rem;
+  color: var(--accent-alt);
+  word-break: break-word;
+}
+
+/* Connector readiness table */
+.connector-list {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 12px;
+}
+
+.connector-row {
+  display: grid;
+  grid-template-columns: minmax(70px, 0.7fr) minmax(110px, 1fr) minmax(70px, 0.6fr) minmax(0, 1.8fr);
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  background: rgba(0, 10, 22, 0.7);
+  border: 1px solid rgba(0, 200, 255, 0.07);
+  border-left: 2px solid rgba(0, 200, 255, 0.2);
+  font-size: 0.78rem;
+}
+
+.connector-head {
+  background: rgba(0, 200, 255, 0.04);
+  border-left-color: rgba(0, 200, 255, 0.4);
+  color: var(--muted);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.connector-cell { min-width: 0; }
+
+.connector-service {
+  color: var(--text-bright);
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.connector-secret {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.connector-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.connector-none {
+  color: var(--muted-2);
+  font-size: 0.74rem;
+}
+
+@media (max-width: 900px) {
+  .connector-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+  .connector-head { display: none; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    REDUCED MOTION
    ═══════════════════════════════════════════════════════════════════════════ */
 @media (prefers-reduced-motion: reduce) {
