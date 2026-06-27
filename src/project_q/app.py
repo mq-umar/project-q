@@ -171,6 +171,15 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
     artifacts = ArtifactValidationService()
     settings = SettingsService(db)
     policy = PolicyService(settings)
+    # PRD §9.6: expire raw screenshot/OCR artifacts older than the retention window.
+    try:
+        from project_q.services.retention import prune_expired_artifacts
+        prune_expired_artifacts(
+            resolved_config.data_root / "windows_artifacts",
+            retention_hours=int(settings.get_all().get("artifact_retention_hours", 24)),
+        )
+    except Exception:  # noqa: BLE001 - maintenance must never block startup
+        pass
     memory = MemoryService(db, settings, sync)
     tasks = TaskService(db, sync)
     agents = AgentService(db, sync)
