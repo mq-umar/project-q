@@ -14,6 +14,10 @@ _INTERNET_TOOLS: frozenset[str] = frozenset({
     "github.create_issue",
     "slack.list_channels",
     "slack.post_message",
+    "notion.search",
+    "notion.create_page",
+    "todoist.list_tasks",
+    "todoist.create_task",
 })
 
 

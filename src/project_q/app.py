@@ -237,8 +237,12 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
             GitHubCreateIssueTool,
             GitHubListIssuesTool,
             GitHubListReposTool,
+            NotionCreatePageTool,
+            NotionSearchTool,
             SlackListChannelsTool,
             SlackPostMessageTool,
+            TodoistCreateTaskTool,
+            TodoistListTasksTool,
         )
 
         tools.register(GitHubListReposTool(vault, settings))
@@ -246,6 +250,10 @@ def create_application(config: AppConfig | None = None) -> ProjectQApplication:
         tools.register(GitHubCreateIssueTool(vault, settings))
         tools.register(SlackListChannelsTool(vault, settings))
         tools.register(SlackPostMessageTool(vault, settings))
+        tools.register(NotionSearchTool(vault, settings))
+        tools.register(NotionCreatePageTool(vault, settings))
+        tools.register(TodoistListTasksTool(vault, settings))
+        tools.register(TodoistCreateTaskTool(vault, settings))
     except Exception:
         pass
     approvals = ApprovalService(db, vault, tools, policy, audit, sync)

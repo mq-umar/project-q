@@ -47,9 +47,16 @@ _SLACK_BASE = "https://slack.com/api"
 
 _GITHUB_SECRET = "github_token"
 _SLACK_SECRET = "slack_bot_token"
+_NOTION_BASE = "https://api.notion.com/v1"
+_NOTION_HEADERS = {"Notion-Version": "2022-06-28"}
+_NOTION_SECRET = "notion_token"
+_TODOIST_BASE = "https://api.todoist.com/rest/v2"
+_TODOIST_SECRET = "todoist_token"
 # A GitHub repo must be exactly owner/name — reject extra path/query/CRLF so an
 # owner-supplied value cannot alter the request line (confused-deputy hardening).
 _REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+# Bare id segment for Notion/Todoist path interpolation (no slashes/query/CRLF).
+_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 __all__ = [
     "GitHubListReposTool",
@@ -57,6 +64,10 @@ __all__ = [
     "GitHubCreateIssueTool",
     "SlackListChannelsTool",
     "SlackPostMessageTool",
+    "NotionSearchTool",
+    "NotionCreatePageTool",
+    "TodoistListTasksTool",
+    "TodoistCreateTaskTool",
 ]
 
 
@@ -285,3 +296,98 @@ class SlackPostMessageTool(_ConnectorBase):
         body = {"channel": channel, "text": payload.get("text", "")}
         client = _BearerHttpClient(token, _SLACK_BASE, transport=self.transport)
         return client.request("POST", "/chat.postMessage", body)
+
+
+# ── Notion connectors ─────────────────────────────────────────────────────────
+class NotionSearchTool(_ConnectorBase):
+    definition = ToolDefinition(
+        tool_id="notion.search",
+        name="Notion: Search",
+        description="Search Notion pages/databases. payload {query}.",
+        tier=0,
+    )
+
+    def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._network_local_only():
+            return {"error": "network_policy=local_only blocks notion.search"}
+        payload = payload or {}
+        token, err = self._resolve_token(_NOTION_SECRET)
+        if err is not None:
+            return err
+        client = _BearerHttpClient(token, _NOTION_BASE, _NOTION_HEADERS, transport=self.transport)
+        return client.request("POST", "/search", {"query": str(payload.get("query", ""))})
+
+
+class NotionCreatePageTool(_ConnectorBase):
+    definition = ToolDefinition(
+        tool_id="notion.create_page",
+        # Writes to the owner's own private workspace (PRD Notion Write = Tier 1).
+        name="Notion: Create Page",
+        description="Create a page under a parent. payload {parent_page_id, title}.",
+        tier=1,
+    )
+
+    def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._network_local_only():
+            return {"error": "network_policy=local_only blocks notion.create_page"}
+        payload = payload or {}
+        parent = str(payload.get("parent_page_id", "")).strip()
+        if not _ID_RE.match(parent):
+            return {"error": "valid parent_page_id is required"}
+        token, err = self._resolve_token(_NOTION_SECRET)
+        if err is not None:
+            return err
+        body = {
+            "parent": {"page_id": parent},
+            "properties": {
+                "title": {"title": [{"text": {"content": str(payload.get("title", ""))}}]}
+            },
+        }
+        client = _BearerHttpClient(token, _NOTION_BASE, _NOTION_HEADERS, transport=self.transport)
+        return client.request("POST", "/pages", body)
+
+
+# ── Todoist connectors ────────────────────────────────────────────────────────
+class TodoistListTasksTool(_ConnectorBase):
+    definition = ToolDefinition(
+        tool_id="todoist.list_tasks",
+        name="Todoist: List Tasks",
+        description="List active Todoist tasks.",
+        tier=0,
+    )
+
+    def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._network_local_only():
+            return {"error": "network_policy=local_only blocks todoist.list_tasks"}
+        token, err = self._resolve_token(_TODOIST_SECRET)
+        if err is not None:
+            return err
+        client = _BearerHttpClient(token, _TODOIST_BASE, transport=self.transport)
+        return client.request("GET", "/tasks")
+
+
+class TodoistCreateTaskTool(_ConnectorBase):
+    definition = ToolDefinition(
+        tool_id="todoist.create_task",
+        name="Todoist: Create Task",
+        description="Create a task. payload {content, due_string?, priority?}.",
+        tier=1,
+    )
+
+    def execute(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self._network_local_only():
+            return {"error": "network_policy=local_only blocks todoist.create_task"}
+        payload = payload or {}
+        content = str(payload.get("content", "")).strip()
+        if not content:
+            return {"error": "content is required"}
+        body: dict[str, Any] = {"content": content}
+        if payload.get("due_string"):
+            body["due_string"] = str(payload["due_string"])
+        if isinstance(payload.get("priority"), int):
+            body["priority"] = payload["priority"]
+        token, err = self._resolve_token(_TODOIST_SECRET)
+        if err is not None:
+            return err
+        client = _BearerHttpClient(token, _TODOIST_BASE, transport=self.transport)
+        return client.request("POST", "/tasks", body)

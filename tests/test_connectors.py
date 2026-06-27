@@ -18,8 +18,12 @@ from project_q.tools.connectors import (
     GitHubCreateIssueTool,
     GitHubListIssuesTool,
     GitHubListReposTool,
+    NotionCreatePageTool,
+    NotionSearchTool,
     SlackListChannelsTool,
     SlackPostMessageTool,
+    TodoistCreateTaskTool,
+    TodoistListTasksTool,
 )
 
 
@@ -168,6 +172,59 @@ class ConnectorUnitTests(unittest.TestCase):
             )
         self.assertEqual(rec.calls, [])
 
+    # ── Notion ────────────────────────────────────────────────────────────────
+    def test_notion_search_builds_request(self) -> None:
+        self.assertEqual(NotionSearchTool.definition.tier, 0)
+        rec = _RecordingTransport(response={"results": []})
+        tool = NotionSearchTool(_FakeVault({"notion_token": "secret_x"}), _FakeSettings(), transport=rec)
+        tool.execute({"query": "roadmap"})
+        call = rec.calls[0]
+        self.assertEqual(call["url"], "https://api.notion.com/v1/search")
+        self.assertEqual(call["method"], "POST")
+        self.assertEqual(call["headers"]["Authorization"], "Bearer secret_x")
+        self.assertEqual(call["headers"]["Notion-Version"], "2022-06-28")
+        self.assertEqual(json.loads(call["body_bytes"].decode("utf-8")), {"query": "roadmap"})
+
+    def test_notion_create_page_tier1_and_parent_validation(self) -> None:
+        self.assertEqual(NotionCreatePageTool.definition.tier, 1)
+        rec = _RecordingTransport(response={"id": "p1"})
+        tool = NotionCreatePageTool(_FakeVault({"notion_token": "secret_x"}), _FakeSettings(), transport=rec)
+        self.assertEqual(tool.execute({"title": "T"}), {"error": "valid parent_page_id is required"})
+        self.assertEqual(rec.calls, [])
+        tool.execute({"parent_page_id": "abc123", "title": "T"})
+        body = json.loads(rec.calls[0]["body_bytes"].decode("utf-8"))
+        self.assertEqual(rec.calls[0]["url"], "https://api.notion.com/v1/pages")
+        self.assertEqual(body["parent"], {"page_id": "abc123"})
+        self.assertEqual(body["properties"]["title"]["title"][0]["text"]["content"], "T")
+
+    def test_notion_missing_token_no_transport(self) -> None:
+        rec = _RecordingTransport()
+        tool = NotionSearchTool(_FakeVault(), _FakeSettings(), transport=rec)
+        self.assertEqual(tool.execute({"query": "x"}), {"error": "notion_token not configured in the vault"})
+        self.assertEqual(rec.calls, [])
+
+    # ── Todoist ───────────────────────────────────────────────────────────────
+    def test_todoist_list_tasks_tier0_get(self) -> None:
+        self.assertEqual(TodoistListTasksTool.definition.tier, 0)
+        rec = _RecordingTransport(response=[{"id": "1"}])
+        tool = TodoistListTasksTool(_FakeVault({"todoist_token": "tdt_x"}), _FakeSettings(), transport=rec)
+        tool.execute({})
+        call = rec.calls[0]
+        self.assertEqual(call["url"], "https://api.todoist.com/rest/v2/tasks")
+        self.assertEqual(call["method"], "GET")
+        self.assertEqual(call["headers"]["Authorization"], "Bearer tdt_x")
+
+    def test_todoist_create_task_tier1_posts_body(self) -> None:
+        self.assertEqual(TodoistCreateTaskTool.definition.tier, 1)
+        rec = _RecordingTransport(response={"id": "9"})
+        tool = TodoistCreateTaskTool(_FakeVault({"todoist_token": "tdt_x"}), _FakeSettings(), transport=rec)
+        self.assertEqual(tool.execute({}), {"error": "content is required"})
+        tool.execute({"content": "Buy milk", "due_string": "tomorrow", "priority": 4})
+        self.assertEqual(
+            json.loads(rec.calls[0]["body_bytes"].decode("utf-8")),
+            {"content": "Buy milk", "due_string": "tomorrow", "priority": 4},
+        )
+
 
 class ConnectorAppHarnessTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -198,6 +255,10 @@ class ConnectorAppHarnessTests(unittest.TestCase):
             "github.create_issue": 2,
             "slack.list_channels": 0,
             "slack.post_message": 2,
+            "notion.search": 0,
+            "notion.create_page": 1,
+            "todoist.list_tasks": 0,
+            "todoist.create_task": 1,
         }
         for tool_id, tier in expected.items():
             tool = self.app.tools.get(tool_id)
