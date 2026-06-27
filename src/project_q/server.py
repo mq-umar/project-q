@@ -251,6 +251,7 @@ class ProjectQHandler(BaseHTTPRequestHandler):
             ("POST", r"^/api/memories/export$", self._export_memories),
             ("POST", r"^/api/memories/import$", self._import_memories),
             ("POST", r"^/api/memories/bulk-delete$", self._bulk_delete_memories),
+            ("GET", r"^/api/memories/playbooks/candidates$", self._list_playbook_candidates),
             ("GET", r"^/api/memories/playbooks$", self._list_playbooks),
             ("POST", r"^/api/memories/playbooks/([^/]+)/promote$", self._promote_playbook),
             ("PUT", r"^/api/memories/([^/]+)$", self._update_memory),
@@ -1801,6 +1802,11 @@ class ProjectQHandler(BaseHTTPRequestHandler):
 
     def _list_playbooks(self, _args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
         self._json_response({"playbooks": self.app.memory.list_playbook_candidates()})
+
+    def _list_playbook_candidates(self, _args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
+        # Recurrence-ranked view: the same tool sequence succeeding repeatedly is
+        # a stronger promote-to-routine signal than any single candidate.
+        self._json_response({"candidates": self.app.memory.aggregate_playbook_candidates()})
 
     def _promote_playbook(self, args: tuple[str, ...], _body: dict[str, Any], _query: dict[str, Any]) -> None:
         # The owner-session gate on this POST is itself the explicit owner action.

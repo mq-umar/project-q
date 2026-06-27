@@ -1096,7 +1096,7 @@ class ProjectGeneratorTool:
         return {
             "src/main.py": self._script_main_py(instruction),
             "README.md": self._project_readme(project_name, "script_tool", instruction, "python src/main.py ."),
-            "tests/test_smoke.py": self._script_smoke_test(),
+            "tests/test_smoke.py": self._script_smoke_test(instruction),
         }
 
     @staticmethod
@@ -1196,13 +1196,34 @@ if __name__ == "__main__":
 '''
         return f'''from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 
+def process(root: Path) -> list[Path]:
+    """Walk ROOT and return the files this script acts on.
+
+    Request: {ProjectGeneratorTool._escape_py(instruction)}
+    """
+    root = Path(root).expanduser().resolve()
+    results: list[Path] = []
+    if not root.exists():
+        return results
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            results.append(path)
+    return results
+
+
 def main() -> int:
-    print("Project Q generated script")
-    print("Request: {ProjectGeneratorTool._escape_py(instruction)}")
-    print(f"Running from {{Path.cwd()}}")
+    parser = argparse.ArgumentParser(description="Project Q generated script.")
+    parser.add_argument("root", nargs="?", default=".", help="Directory to process.")
+    args = parser.parse_args()
+    root = Path(args.root).expanduser().resolve()
+    matches = process(root)
+    print(f"Processed {{len(matches)}} file(s) under {{root}}")
+    for path in matches:
+        print(path)
     return 0
 
 
@@ -1390,8 +1411,13 @@ def test_seed_tasks_exist():
 '''
 
     @staticmethod
-    def _script_smoke_test() -> str:
-        return '''from pathlib import Path
+    def _script_smoke_test(instruction: str = "") -> str:
+        # The emitted smoke test must import the symbol the emitted main.py
+        # actually defines: scan_todos for TODO-scanner scripts, process() for
+        # the generic argparse scaffold. Otherwise non-TODO scripts ship a test
+        # that ImportErrors at collection.
+        if "todo" in instruction.lower():
+            return '''from pathlib import Path
 from src.main import scan_todos
 
 
@@ -1399,6 +1425,15 @@ def test_scan_todos_finds_todo(tmp_path: Path):
     sample = tmp_path / "sample.py"
     sample.write_text("# TODO: verify generated script\\n", encoding="utf-8")
     assert scan_todos(tmp_path)
+'''
+        return '''from pathlib import Path
+from src.main import process
+
+
+def test_process_lists_files(tmp_path: Path):
+    sample = tmp_path / "sample.txt"
+    sample.write_text("hello\\n", encoding="utf-8")
+    assert sample in process(tmp_path)
 '''
 
     @staticmethod

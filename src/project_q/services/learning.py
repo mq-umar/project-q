@@ -112,6 +112,7 @@ class LearningLabService:
         run_id = self.db.make_id("learn")
         started_at = utc_now()
         findings = self._collect_findings(reason)
+        reflected_task_ids = self._reflect_on_recent_tasks()
         created_memory_ids = self._write_learning_memory(findings, reason)
         created_task_ids = self._write_follow_up_tasks(findings)
         summary = self._summarize(findings, created_task_ids, created_memory_ids)
@@ -152,9 +153,56 @@ class LearningLabService:
                 "finding_count": len(findings),
                 "created_task_ids": created_task_ids,
                 "created_memory_ids": created_memory_ids,
+                "reflected_task_ids": reflected_task_ids,
             },
         )
         return self.get_run(run_id)
+
+    def _reflected_task_ids(self) -> set[str]:
+        """Task ids that already have a reflection memory, so the autonomous
+        cycle never re-reflects the same completed task."""
+        seen: set[str] = set()
+        try:
+            memories = self.memory_service.list_all(limit=500)
+        except Exception:  # noqa: BLE001 - reflection is best-effort
+            return seen
+        for mem in memories:
+            if "task_reflection" not in (mem.get("tags") or []):
+                continue
+            task_id = (mem.get("metadata") or {}).get("task_id")
+            if task_id:
+                seen.add(str(task_id))
+        return seen
+
+    def _reflect_on_recent_tasks(self, limit: int = 10) -> list[str]:
+        """When auto_reflect_on_tasks is enabled, reflect on recently-completed
+        tasks that have no reflection memory yet — so the autonomous learning
+        cycle (not just the task-PATCH route) produces playbook candidates and
+        closes the get-smarter loop. Capped and best-effort; a bad task or a
+        disabled flag never breaks the cycle."""
+        try:
+            settings = self.settings_service.get_all()
+        except Exception:  # noqa: BLE001
+            return []
+        if not settings.get("auto_reflect_on_tasks"):
+            return []
+        try:
+            tasks = self.task_service.list_all(limit=200)
+        except Exception:  # noqa: BLE001
+            return []
+        completed = [t for t in tasks if t.get("status") == "completed" and t.get("id")]
+        if not completed:
+            return []
+        already = self._reflected_task_ids()
+        pending = [t["id"] for t in completed if str(t["id"]) not in already]
+        reflected: list[str] = []
+        for task_id in pending[: max(0, int(limit))]:
+            try:
+                self.reflect_on_task(task_id)
+                reflected.append(task_id)
+            except Exception:  # noqa: BLE001 - one bad task must not break the cycle
+                continue
+        return reflected
 
     def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:
         with self.db.connection() as conn:

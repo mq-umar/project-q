@@ -378,6 +378,43 @@ class MemoryService:
                 break
         return candidates
 
+    def aggregate_playbook_candidates(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Group playbook candidates by their tool_sequence and rank by recurrence.
+
+        Each clean task success writes a separate (untrusted) candidate, so a
+        sequence that has worked N times produces N near-duplicate candidates
+        today with no signal of recurrence. Grouping + counting turns that into
+        a far more confident promote-to-routine signal ("this sequence worked
+        5x"). Pure read over the existing candidate memories — does not alter
+        list_playbook_candidates or promote_playbook.
+        """
+        groups: dict[tuple[str, ...], dict[str, Any]] = {}
+        for cand in self.list_playbook_candidates(limit=max(limit, 1) * 5):
+            sequence = tuple(cand.get("tool_sequence") or [])
+            if not sequence:
+                continue
+            created = cand.get("created_at")
+            group = groups.get(sequence)
+            if group is None:
+                groups[sequence] = {
+                    "tool_sequence": list(sequence),
+                    "count": 1,
+                    "representative_memory_id": cand["memory_id"],
+                    "memory_ids": [cand["memory_id"]],
+                    "first_seen": created,
+                    "last_seen": created,
+                }
+                continue
+            group["count"] += 1
+            group["memory_ids"].append(cand["memory_id"])
+            if created:
+                if not group["first_seen"] or created < group["first_seen"]:
+                    group["first_seen"] = created
+                if not group["last_seen"] or created > group["last_seen"]:
+                    group["last_seen"] = created
+        ranked = sorted(groups.values(), key=lambda g: g["count"], reverse=True)
+        return ranked[:limit]
+
     def promote_playbook(
         self,
         memory_id: str,

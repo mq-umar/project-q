@@ -10,7 +10,7 @@ BUILT_IN_TEMPLATES = {
         "name": "Research Agent",
         "agent_type": "research",
         "goal": "Research a given topic thoroughly and return a structured summary with key findings, sources, and actionable insights.",
-        "tools": ["browser.inspect_page", "browser.run_actions", "browser.complete_goal", "knowledge.answer", "filesystem.write_file"],
+        "tools": ["research.web", "browser.inspect_page", "browser.run_actions", "browser.complete_goal", "knowledge.answer", "filesystem.write_file"],
         "time_budget_minutes": 30,
         "notes": "Use multiple sources. Cross-reference facts. Write findings to a report file.",
     },

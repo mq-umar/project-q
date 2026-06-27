@@ -122,7 +122,13 @@ class PlanExecutorService:
             )
             created_routine_ids.append(routine["id"])
 
-        tool_limit = 3 if max_tool_calls is None else max(0, min(3, int(max_tool_calls)))
+        # Interactive/agent default of 8 tool executions per turn; an explicit
+        # max_tool_calls budget (from an agent definition) is honored exactly so
+        # multi-step work (read -> write -> validate -> fix) isn't silently
+        # truncated at 3. Every call still passes the same policy/approval gate
+        # below, and agent runs remain bounded by their declared budget.
+        default_tool_limit = 8
+        tool_limit = default_tool_limit if max_tool_calls is None else max(0, int(max_tool_calls))
         allowed_tools = set(allowed_tool_ids) if allowed_tool_ids is not None else None
         for tool_call in plan.tool_calls[:tool_limit]:
             if allowed_tools is not None and tool_call.tool_id not in allowed_tools:
